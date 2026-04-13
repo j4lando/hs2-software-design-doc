@@ -36,28 +36,37 @@ The satellite uses an EnduroSat S-band radio for ground communications using the
 
 ## 3. Operational Modes
 
-The satellite operates in five modes managed by `SatStateMachine`. Uplink commands are accepted in all modes.
+The satellite operates in three main modes managed by `SatStateMachine`. Uplink commands are accepted in all modes.
 
 | Mode | Description |
 |------|-------------|
-| **Checkout** | One-time lifecycle phase at start of mission. All subsystems verified operational. |
-| **Standby** | Nominal operations. Housekeeping telemetry continuously downlinked. |
-| **Standby-Experiment** | Armed and ready for experiment. Awaiting power threshold to be met. |
-| **Experiment** | LOST and FOUND algorithms run opportunistically when power is available. |
+| **Checkout** | Initial lifecycle phase. All subsystems verified operational. Submodes TBD. |
+| **Standby** | Nominal operations. Runs Charge, Downlink, and Science submodes autonomously based on conditions. |
 | **Safe** | Low-power survival mode. Minimal operations. Uplink always active. |
 
-### Mode Transition Table
+### Main Mode Transitions
 
 | From | To | Trigger |
 |------|----|---------|
 | Checkout | Standby | Ground command: `CHECKOUT_COMPLETE` |
-| Standby | Standby-Experiment | Ground command: `EXPERIMENT_ENABLE` |
-| Standby-Experiment | Experiment | Autonomous: EPS state of charge ≥ `POWER_THRESHOLD` parameter |
-| Experiment | Standby-Experiment | EPS state of charge drops below `POWER_THRESHOLD` |
 | Any | Safe | Ground command `SAFE_MODE` or EPS `FATAL` low-power event |
 | Safe | Standby | Ground command: `SAFE_EXIT` |
 
-**`POWER_THRESHOLD`** is a configurable F' parameter persisted by `PrmDb`.
+### Standby Submodes
+
+Standby has no separate Idle state — Idle is the base condition from which all submodes inherit. Submodes activate and deactivate autonomously based on real-time conditions.
+
+| Submode | Activation Conditions | Description |
+|---------|-----------------------|-------------|
+| **Charge** | Sun present AND Downlink not active AND Science not active | Points solar panels at sun to maximize power generation |
+| **Downlink** | Enough power AND passing over ground station | Downlinks telemetry, events, data products, and files to ground |
+| **Science** | Downlink not active AND enough power AND `EXPERIMENT_ENABLED` parameter set by ground | Runs LOST and FOUND algorithms opportunistically |
+
+**Submode priority:** Downlink takes priority over Science. Charge activates in the remaining windows when neither Downlink nor Science is active.
+
+**Key parameters** (configurable, persisted via `PrmDb`):
+- `POWER_THRESHOLD` — minimum EPS state of charge required for Downlink or Science
+- `EXPERIMENT_ENABLED` — ground-set boolean enabling the Science submode
 
 ---
 
@@ -173,7 +182,7 @@ This uses the F' **callback port pattern** — `ScienceManager` sends requests t
 | `EpsManager` | Active (worker) | State machine: [Startup] → Idle → Reading → LowPower / Error. Publishes SoC as telemetry channel; raises `WARNING_HI` at low threshold, `FATAL` at critical threshold |
 
 **Ports exposed out of subtopology:**
-- `powerStateOut` → consumed by `SatStateMachine` for Standby-Experiment → Experiment transition
+- `powerStateOut` → consumed by `SatStateMachine` for Standby submode activation decisions
 
 **Health monitoring:** `EpsManager` is health-monitored.
 
@@ -199,7 +208,7 @@ These components are instantiated at the top-level topology and are not inside a
 
 | Component | Type | Purpose |
 |-----------|------|---------|
-| `SatStateMachine` | Active | Owns the 5-mode satellite state machine; processes mode transition commands and EPS power state |
+| `SatStateMachine` | Active | Owns the 3-mode satellite state machine with Standby submodes (Charge, Downlink, Science); evaluates submode conditions each 1 Hz tick |
 | `StarTrackerManager` | Active (worker) | State machine: [Startup] → Idle → Acquiring → Tracking → Idle / Error. Shared by Science and ADCS |
 | `GnssManager` | Active (worker) | State machine: [Startup] → Idle → Acquiring → Tracking → Idle / Error. Shared by Science, ADCS, and time services |
 | `EnduroSatManager` | Active (worker) | State machine: [Startup] → Idle → Transmitting / Receiving → Idle / Error. Bridges ComFprime to the EnduroSat S-band radio |
@@ -224,7 +233,44 @@ These components are instantiated at the top-level topology and are not inside a
 
 ---
 
-## 8. Key Cross-Subtopology Wiring
+## 8. SatStateMachine Design
+
+`SatStateMachine` is an Active component implementing the satellite state machine with `Fw::Sm`.
+
+### Main Mode Transitions
+
+| From | To | Trigger |
+|------|----|---------|
+| Checkout | Standby | Ground command: `CHECKOUT_COMPLETE` |
+| Any | Safe | Ground command `SAFE_MODE` or `EpsManager` `FATAL` event |
+| Safe | Standby | Ground command: `SAFE_EXIT` |
+
+### Standby Submode Logic (evaluated each 1 Hz tick)
+
+Idle is the base Standby state — not a named state, but the condition where no submode is active. All submodes inherit from it.
+
+| Submode | Enter When | Exit When |
+|---------|-----------|-----------|
+| Downlink | Enough power AND over ground station | No longer over ground station OR power below threshold |
+| Science | NOT Downlink AND enough power AND `EXPERIMENT_ENABLED` | Downlink activates OR power drops below threshold OR `EXPERIMENT_ENABLED` cleared |
+| Charge | Sun present AND NOT Downlink AND NOT Science | Downlink or Science activates OR sun not present |
+
+**Priority:** Downlink > Science > Charge.
+
+### Parameters (persisted via `PrmDb`)
+
+| Parameter | Description |
+|-----------|-------------|
+| `POWER_THRESHOLD` | Minimum EPS state of charge (%) for Downlink or Science activation |
+| `EXPERIMENT_ENABLED` | Ground-set boolean enabling the Science submode |
+
+**Events emitted:** main mode and submode entry/exit events for every transition.
+
+**Health checked:** Yes.
+
+---
+
+## 9. Key Cross-Subtopology Wiring
 
 | Source | Destination | Data |
 |--------|-------------|------|
@@ -242,7 +288,7 @@ These components are instantiated at the top-level topology and are not inside a
 
 ---
 
-## 9. Health Monitoring Summary
+## 10. Health Monitoring Summary
 
 Components enrolled in `Svc::Health` ping/pong monitoring:
 
@@ -260,7 +306,7 @@ All hardware manager workers and science workers (`LostWorker`, `FoundWorker`) a
 
 ---
 
-## 10. Design Pattern References
+## 11. Design Pattern References
 
 | Pattern | Applied To | F' Documentation |
 |---------|-----------|-----------------|
@@ -275,7 +321,7 @@ All hardware manager workers and science workers (`LostWorker`, `FoundWorker`) a
 
 ---
 
-## 11. External Library Integration
+## 12. External Library Integration
 
 | Library | Algorithm | Camera | Integration |
 |---------|-----------|--------|-------------|
