@@ -81,6 +81,8 @@ Layer 1 — F' Native Bus Drivers (hardware-only)
 
 All hardware managers are **Active components** with internal F' state machines (`Fw::Sm`). They act as workers in the manager-worker pattern — application-level components dispatch work to them and receive completion callbacks.
 
+Each hardware manager state machine includes a **startup protocol phase** (PowerOn → device-specific initialization sequence → Idle) before entering operational states. The specific startup protocols for each device are to be defined during detailed design once hardware datasheets and vendor SDKs are available.
+
 `StarTrackerManager`, `GnssManager`, and `EnduroSatManager` are instantiated at the **top-level topology** because they are shared across multiple subtopologies. All other hardware managers are instantiated inside their primary subtopology.
 
 ---
@@ -107,8 +109,8 @@ All hardware managers are **Active components** with internal F' state machines 
 | `ScienceManager` | Active (high priority) | Orchestrates synchronized data capture; tracks busy state; dispatches bundles to workers; records data products; flags images for storage |
 | `LostWorker` | Active (low priority) | Calls LOST library with Camera 1 image + attitude + position bundle; reports results as data products |
 | `FoundWorker` | Active (low priority) | Calls FOUND library with Camera 2 image + attitude + position bundle; reports results as data products |
-| `Camera1Manager` | Active (worker) | State machine: Idle → Capturing → Readout → Idle / Error |
-| `Camera2Manager` | Active (worker) | State machine: Idle → Capturing → Readout → Idle / Error |
+| `Camera1Manager` | Active (worker) | State machine: [Startup] → Idle → Capturing → Readout → Idle / Error |
+| `Camera2Manager` | Active (worker) | State machine: [Startup] → Idle → Capturing → Readout → Idle / Error |
 
 **Synchronized Capture Requirement:**
 `ScienceManager` must simultaneously acquire all of the following before dispatching work:
@@ -141,9 +143,9 @@ This uses the F' **callback port pattern** — `ScienceManager` sends requests t
 | Component | Type | Purpose |
 |-----------|------|---------|
 | `AdcsManager` | Active (high priority) | Owns attitude control loop; switches ADCS mode based on `SatStateMachine` commands |
-| `ImuManager` | Active (worker) | State machine: Idle → Sampling → Idle / Error |
-| `SunSensorManager` | Active (worker) | State machine: Idle → Sampling → Idle / Error |
-| `MagnetorquerManager` | Active (worker) | State machine: Idle → Actuating → Idle / Error |
+| `ImuManager` | Active (worker) | State machine: [Startup] → Idle → Sampling → Idle / Error |
+| `SunSensorManager` | Active (worker) | State machine: [Startup] → Idle → Sampling → Idle / Error |
+| `MagnetorquerManager` | Active (worker) | State machine: [Startup] → Idle → Actuating → Idle / Error |
 
 **ADCS Modes (internal to `AdcsManager`):**
 
@@ -168,7 +170,7 @@ This uses the F' **callback port pattern** — `ScienceManager` sends requests t
 
 | Component | Type | Purpose |
 |-----------|------|---------|
-| `EpsManager` | Active (worker) | State machine: Idle → Reading → LowPower / Error. Publishes SoC as telemetry channel; raises `WARNING_HI` at low threshold, `FATAL` at critical threshold |
+| `EpsManager` | Active (worker) | State machine: [Startup] → Idle → Reading → LowPower / Error. Publishes SoC as telemetry channel; raises `WARNING_HI` at low threshold, `FATAL` at critical threshold |
 
 **Ports exposed out of subtopology:**
 - `powerStateOut` → consumed by `SatStateMachine` for Standby-Experiment → Experiment transition
@@ -184,8 +186,8 @@ This uses the F' **callback port pattern** — `ScienceManager` sends requests t
 | Component | Type | Purpose |
 |-----------|------|---------|
 | `ThermalManager` | Active | Polls temperature sensors; commands heater based on configurable F' parameter thresholds; raises events on out-of-range readings |
-| `TemperatureSensorManager` | Active (worker) | State machine: Idle → Sampling → Idle / Error |
-| `HeaterManager` | Active (worker) | State machine: Off → HeatingUp → On → CoolingDown / Error |
+| `TemperatureSensorManager` | Active (worker) | State machine: [Startup] → Idle → Sampling → Idle / Error |
+| `HeaterManager` | Active (worker) | State machine: [Startup] → Off → HeatingUp → On → CoolingDown / Error |
 
 **Health monitoring:** `ThermalManager` is health-monitored. Hardware managers excluded.
 
@@ -198,9 +200,9 @@ These components are instantiated at the top-level topology and are not inside a
 | Component | Type | Purpose |
 |-----------|------|---------|
 | `SatStateMachine` | Active | Owns the 5-mode satellite state machine; processes mode transition commands and EPS power state |
-| `StarTrackerManager` | Active (worker) | State machine: Idle → Acquiring → Tracking → Idle / Error. Shared by Science and ADCS |
-| `GnssManager` | Active (worker) | State machine: Idle → Acquiring → Tracking → Idle / Error. Shared by Science, ADCS, and time services |
-| `EnduroSatManager` | Active (worker) | State machine: Idle → Transmitting / Receiving → Idle / Error. Bridges ComFprime to the EnduroSat S-band radio |
+| `StarTrackerManager` | Active (worker) | State machine: [Startup] → Idle → Acquiring → Tracking → Idle / Error. Shared by Science and ADCS |
+| `GnssManager` | Active (worker) | State machine: [Startup] → Idle → Acquiring → Tracking → Idle / Error. Shared by Science, ADCS, and time services |
+| `EnduroSatManager` | Active (worker) | State machine: [Startup] → Idle → Transmitting / Receiving → Idle / Error. Bridges ComFprime to the EnduroSat S-band radio |
 | `RateGroupDriver` | Passive | Divides hardware timer interrupt into multiple rate signals |
 | `RateGroup1` | Active | 10 Hz scheduling |
 | `RateGroup2` | Active | 1 Hz scheduling |
