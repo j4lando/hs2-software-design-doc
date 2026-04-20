@@ -1,5 +1,5 @@
 # HS2 Satellite Flight Software — Software Design Document
-**Date:** 2026-04-12
+**Date:** 2026-04-20
 **Framework:** F' (F Prime) — `nasa/fprime@devel`
 **Platform:** 3U CubeSat, single flight computer
 
@@ -7,11 +7,12 @@
 
 ## 1. Mission Overview
 
-HS2 is a 3U CubeSat scientific mission validating two optical navigation algorithms:
-- **LOST** — runs on Camera 1; included as an external C++ library via CMake
-- **FOUND** — runs on Camera 2; included as an external C++ library via CMake
+HS2 is a 3U CubeSat scientific mission validating three optical navigation algorithms:
+- **LOST** — lost-in-space star identification; runs on Camera 1
+- **FOUND** — follow-up optical navigation; runs on Camera 2
+- **SCOPE** — star catalog optical processing; runs LOST internally as a preprocessing stage; used for calibration experiments on Camera 1 + 2
 
-The satellite uses an EnduroSat S-band radio for ground communications using the F' native protocol. Science results are always recorded as F' data products. Raw images are stored to external flash only when flagged by the science algorithms. The flight software is implemented in F' and organized into custom and pre-built subtopologies.
+All algorithms are included as external C++ libraries via CMake. Science results are always stored as F' data products. Raw images are stored to external flash when flagged by the science algorithms. The flight software is implemented in F' and organized into custom and pre-built subtopologies.
 
 ---
 
@@ -19,78 +20,93 @@ The satellite uses an EnduroSat S-band radio for ground communications using the
 
 | Hardware | Interface | Primary User |
 |----------|-----------|--------------|
-| Camera 1 | SPI/I2C | Science (LOST algorithm) |
-| Camera 2 | SPI/I2C | Science (FOUND algorithm) |
-| Star Tracker | UART | Science (synchronized capture), ADCS (precision pointing) |
-| aGNSS Receiver | UART | Science (synchronized capture), ADCS (position/timing) |
-| IMU | SPI/I2C | ADCS |
-| Sun Sensors | I2C/GPIO | ADCS |
-| Magnetorquers | GPIO/I2C | ADCS |
-| EPS Board | I2C/UART | EPS subtopology, SatStateMachine |
-| EnduroSat S-band Radio | UART | ComFprime subtopology |
+| Camera 1 | SPI/I2C | DataCollectionApplication (LOST, SCOPE) |
+| Camera 2 | SPI/I2C | DataCollectionApplication (FOUND, SCOPE) |
+| Star Tracker | UART | DataCollectionApplication (synchronized capture), AdcsApplication (precision pointing) |
+| aGNSS Receiver | UART | DataCollectionApplication (synchronized capture), AdcsApplication (position/timing), SatStateMachine (orbital state) |
+| IMU | SPI/I2C | AdcsApplication |
+| Sun Sensors | I2C/GPIO | AdcsApplication, SatStateMachine (sun/eclipse detection) |
+| Magnetorquers | GPIO/I2C | AdcsApplication |
+| EPS Board | I2C/UART | EpsManager, SatStateMachine |
+| EnduroSat S-band Radio | UART | CommsApplication |
 | External Flash | SPI | FileHandling subtopology |
-| Temperature Sensors | I2C | Thermal subtopology |
-| Heater | GPIO | Thermal subtopology |
+| Temperature Sensors | I2C | ThermalManager |
+| Heater | GPIO | ThermalManager |
 
 ---
 
 ## 3. Operational Modes
 
-The satellite operates in three main modes managed by `SatStateMachine`. Uplink commands are accepted in all modes.
+The satellite operates in two main modes managed by `SatStateMachine`. Uplink commands are accepted in all modes via the always-active omni communications link.
 
 | Mode | Description |
 |------|-------------|
-| **Checkout** | Initial lifecycle phase. All subsystems verified operational. Submodes TBD. |
-| **Standby** | Nominal operations. Runs Charge, Downlink, and Science submodes autonomously based on conditions. |
-| **Safe** | Low-power survival mode. Minimal operations. Uplink always active. |
+| **Safe** | Initial and emergency mode. Minimal operations. Detumble runs when power allows. Omni comms always active. |
+| **Standby** | Full autonomous operations. Entered after ground completes checkout. Submodes evaluated each 1 Hz tick. |
 
-### Main Mode Transitions
+### Safe Mode
 
-| From | To | Trigger |
-|------|----|---------|
-| Checkout | Standby | Ground command: `CHECKOUT_COMPLETE` |
-| Any | Safe | Ground command `SAFE_MODE` or EPS `FATAL` low-power event |
-| Safe | Standby | Ground command: `SAFE_EXIT` |
+The satellite enters Safe mode on: deploy/reboot, EPS `FATAL` low-power event, or ground command `SAFE_MODE`. Exits to Standby on ground command `SAFE_EXIT` (only after checkout has been completed).
+
+`AdcsApplication` runs detumble (magnetometer B-dot algorithm) when power allows. All other application components are inactive.
+
+### Standby Mode Entry (Checkout)
+
+Checkout is a one-time ground-commanded commissioning sequence performed before the satellite enters autonomous Standby operations. Ground commands subsystem verification and OKs the transition. After checkout completes the satellite enters Standby and does not return to a checkout mode.
 
 ### Standby Submodes
 
-Standby has no separate Idle state — Idle is the base condition from which all submodes inherit. Submodes activate and deactivate autonomously based on real-time conditions.
+Evaluated each 1 Hz tick by `SatStateMachine` in priority order. The highest-priority condition that is met determines the active submode.
 
-| Submode | Activation Conditions | Description |
-|---------|-----------------------|-------------|
-| **Charge** | Sun present AND Downlink not active AND Science not active | Points solar panels at sun to maximize power generation |
-| **Downlink** | Enough power AND passing over ground station | Downlinks telemetry, events, data products, and files to ground |
-| **Science** | Downlink not active AND enough power AND `EXPERIMENT_ENABLED` parameter set by ground | Runs LOST and FOUND algorithms opportunistically |
+| Priority | Submode | Entry Condition |
+|----------|---------|-----------------|
+| 1 | **Downlink** | Over ground station AND downlink queue above `DOWNLINK_QUEUE_THRESHOLD` AND power OK |
+| 2 | **Science** | Power OK AND `EXPERIMENT_ENABLED` parameter set AND not Downlink |
+| 3 | **Charge** | In sun AND not Downlink AND not Science |
+| 4 | **Eclipse** | Fallback — in eclipse, not Downlink, not Science |
 
-**Submode priority:** Downlink takes priority over Science. Charge activates in the remaining windows when neither Downlink nor Science is active.
+**Condition sources:**
+- Power OK → `EpsManager` (state of charge above `POWER_THRESHOLD` parameter)
+- Over ground station → `GnssManager` (orbital position + ephemeris)
+- In sun / in eclipse → sun sensors AND `GnssManager` orbital position calculation
+- Downlink queue depth → `ComQueue` component
+- `EXPERIMENT_ENABLED`, `POWER_THRESHOLD`, `DOWNLINK_QUEUE_THRESHOLD` → persisted via `PrmDb`
 
-**Key parameters** (configurable, persisted via `PrmDb`):
-- `POWER_THRESHOLD` — minimum EPS state of charge required for Downlink or Science
-- `EXPERIMENT_ENABLED` — ground-set boolean enabling the Science submode
+**Key parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `POWER_THRESHOLD` | Minimum EPS state of charge (%) for Downlink or Science |
+| `EXPERIMENT_ENABLED` | Ground-set boolean enabling the Science submode |
+| `DOWNLINK_QUEUE_THRESHOLD` | Minimum queue depth (bytes) required to enter Downlink |
 
 ---
 
 ## 4. Architecture Overview
 
-The flight software uses a **three-layer App-Manager-Driver architecture**:
+The flight software uses a **three-layer App-Manager-Driver architecture**. Component names reflect their layer:
 
 ```
-Layer 3 — Mission Subtopologies (application logic)
-    Science | Adcs | Eps | Thermal
-    + pre-built: CdhCore | ComFprime | FileHandling | DataProducts
+Layer 3 — Application components (*Application)
+    DataCollectionApplication | ScienceInferenceApplication
+    AdcsApplication | CommsApplication
+    + pre-built subtopologies: CdhCore | ComFprime | FileHandling | DataProducts
 
-Layer 2 — Hardware Managers (active workers with internal state machines)
+Layer 2 — Hardware Managers (*Manager)
     Camera1Manager | Camera2Manager | StarTrackerManager | GnssManager
     ImuManager | SunSensorManager | MagnetorquerManager
-    EpsManager | TemperatureSensorManager | HeaterManager | EnduroSatManager
+    EpsManager | ThermalManager | TemperatureSensorManager | HeaterManager
+    EnduroSatManager
 
-Layer 1 — F' Native Bus Drivers (hardware-only)
+Layer 1 — F' Native Bus Drivers (*Driver)
     LinuxI2cDriver | LinuxSpiDriver | LinuxUartDriver | LinuxGpioDriver
 ```
 
-All hardware managers are **Active components** with internal F' state machines (`Fw::Sm`). They act as workers in the manager-worker pattern — application-level components dispatch work to them and receive completion callbacks.
+**Application components** (Layer 3) contain mission logic and receive mode-switch commands from `SatStateMachine`. Each has an internal hierarchical F' state machine (`Fw::Sm`) where mode is the top-level state and operational substates are nested inside. Application components dispatch work to hardware managers and never talk directly to drivers.
 
-Each hardware manager state machine includes a **startup protocol phase** (PowerOn → device-specific initialization sequence → Idle) before entering operational states. The specific startup protocols for each device are to be defined during detailed design once hardware datasheets and vendor SDKs are available.
+**Hardware managers** (Layer 2) are Active or Queued components with a single flat F' state machine following the startup→operational→recovery pattern: `RESET → WAIT_RESET → ENABLE → CONFIGURE → RUN`. They have no satellite mode awareness. Reference implementation: `fprime-community/fprime-sensors` `ImuManager`.
+
+**Drivers** (Layer 1) are passive bus drivers with no device knowledge.
 
 `StarTrackerManager`, `GnssManager`, and `EnduroSatManager` are instantiated at the **top-level topology** because they are shared across multiple subtopologies. All other hardware managers are instantiated inside their primary subtopology.
 
@@ -98,7 +114,7 @@ Each hardware manager state machine includes a **startup protocol phase** (Power
 
 ## 5. Subtopology Decomposition
 
-### 5.1 Pre-Built Subtopologies (imported without modification)
+### 5.1 Pre-Built Subtopologies
 
 | Subtopology | Source | Purpose |
 |-------------|--------|---------|
@@ -107,111 +123,173 @@ Each hardware manager state machine includes a **startup protocol phase** (Power
 | `FileHandling` | `Svc/Subtopologies/FileHandling` | FileUplink, FileDownlink, FileManager, PrmDb |
 | `DataProducts` | `Svc/Subtopologies/DataProducts` | DpManager, DpWriter, DpCatalog for science results |
 
-### 5.2 Science Subtopology
+### 5.2 DataCollection Subtopology
 
-**Purpose:** Manages synchronized image capture and execution of the LOST and FOUND optical navigation algorithms.
+**Purpose:** Executes data collection experiments — powers on cameras, acquires synchronized images and navigation data, stores results to flash, and reports outcome to `SatStateMachine`.
 
 **Components:**
 
 | Component | Type | Purpose |
 |-----------|------|---------|
-| `ScienceManager` | Active (high priority) | Orchestrates synchronized data capture; tracks busy state; dispatches bundles to workers; records data products; flags images for storage |
-| `LostWorker` | Active (low priority) | Calls LOST library with Camera 1 image + attitude + position bundle; reports results as data products |
-| `FoundWorker` | Active (low priority) | Calls FOUND library with Camera 2 image + attitude + position bundle; reports results as data products |
-| `Camera1Manager` | Active (worker) | State machine: [Startup] → Idle → Capturing → Readout → Idle / Error |
-| `Camera2Manager` | Active (worker) | State machine: [Startup] → Idle → Capturing → Readout → Idle / Error |
+| `DataCollectionApplication` | Active (high priority) | Hierarchical SM; receives mode from `SatStateMachine`; orchestrates experiment execution |
+| `Camera1Manager` | Active (worker) | State machine: RESET → WAIT_RESET → ENABLE → CONFIGURE → RUN / error→RESET |
+| `Camera2Manager` | Active (worker) | State machine: RESET → WAIT_RESET → ENABLE → CONFIGURE → RUN / error→RESET |
 
-**Synchronized Capture Requirement:**
-`ScienceManager` must simultaneously acquire all of the following before dispatching work:
-1. Image from `Camera1Manager` (for LOST)
-2. Image from `Camera2Manager` (for FOUND)
-3. Attitude reading from `StarTrackerManager` (top-level)
-4. Position/time reading from `GnssManager` (top-level)
+**DataCollectionApplication modes (received via `Sat.DataColModePort`):**
 
-This uses the F' **callback port pattern** — `ScienceManager` sends requests to all four, collects responses, then dispatches complete data bundles to `LostWorker` and `FoundWorker` in parallel.
+| Mode | Behavior |
+|------|----------|
+| `Off` | Inactive. Cameras powered off. |
+| `HealthCheck` | Powers on cameras, verifies operation, powers off. One-time checkout step. |
+| `RunExperiment` | Full experiment: power on → capture → store → power off → report result |
 
-**Science data outputs:**
-- Algorithm results → always stored via `DataProducts` subtopology
-- Flagged raw images → stored to flash via `FileHandling` subtopology
+**DataCollectionApplication hierarchical SM:**
 
-**Health monitoring:** `ScienceManager` is health-monitored. Workers are excluded per F' health checking pattern.
+```
+OFF
+HEALTH_CHECK
+  └─ CHECKING
+RUN_EXPERIMENT
+  ├─ POWERING_ON
+  ├─ CAPTURING      (simultaneous: Camera1, Camera2, StarTracker attitude, GNSS position)
+  ├─ STORING
+  └─ POWERING_OFF
+```
+
+Top-level `switchMode` signal inherited by all leaf states — mode switch valid from any substate.
+
+**Synchronized capture requirement:** Within `CAPTURING`, `DataCollectionApplication` simultaneously requests images from Camera1Manager and Camera2Manager, attitude from `StarTrackerManager`, and position from `GnssManager`. All four must be acquired within a 10ms window before dispatching to `ScienceInferenceApplication`.
 
 **Ports consumed from outside subtopology:**
 - `StarTrackerManager` attitude port (top-level)
 - `GnssManager` position/time port (top-level)
-- `DpManager` (from `DataProducts` subtopology)
-- `DpWriter` (from `DataProducts` subtopology)
-- `FileDownlink` (from `FileHandling` subtopology)
+- `DpManager` / `DpWriter` (DataProducts subtopology)
+- `FileDownlink` (FileHandling subtopology)
+- `modeIn: Sat.DataColModePort` (from `SatStateMachine`)
 
-### 5.3 ADCS Subtopology
+**Health monitoring:** `DataCollectionApplication` is health-monitored. Camera managers excluded.
 
-**Purpose:** Attitude determination and control across all three ADCS operating modes.
+### 5.3 ScienceInference Subtopology
 
-**Components:**
-
-| Component | Type | Purpose |
-|-----------|------|---------|
-| `AdcsManager` | Active (high priority) | Owns attitude control loop; switches ADCS mode based on `SatStateMachine` commands |
-| `ImuManager` | Active (worker) | State machine: [Startup] → Idle → Sampling → Idle / Error |
-| `SunSensorManager` | Active (worker) | State machine: [Startup] → Idle → Sampling → Idle / Error |
-| `MagnetorquerManager` | Active (worker) | State machine: [Startup] → Idle → Actuating → Idle / Error |
-
-**ADCS Modes (internal to `AdcsManager`):**
-
-| Mode | Sensors | Actuators |
-|------|---------|-----------|
-| Detumble | IMU, Sun Sensors | Magnetorquers |
-| Nominal | IMU, Sun Sensors | Magnetorquers |
-| Precision Pointing | IMU, Sun Sensors, Star Tracker | Magnetorquers |
-
-**Ports consumed from top-level:**
-- `StarTrackerManager` attitude port (precision pointing mode)
-- `GnssManager` position/time port (timing reference)
-- `SatStateMachine` mode command port
-
-**Health monitoring:** `AdcsManager` is health-monitored. Hardware managers excluded.
-
-### 5.4 EPS Subtopology
-
-**Purpose:** Monitors battery state of charge and exposes power availability to `SatStateMachine`.
+**Purpose:** Processes raw images stored on flash by running LOST, FOUND, or SCOPE. Operates on a scheduled polling cycle. Schedule-driven; receives no ground commands.
 
 **Components:**
 
 | Component | Type | Purpose |
 |-----------|------|---------|
-| `EpsManager` | Active (worker) | State machine: [Startup] → Idle → Reading → LowPower / Error. Publishes SoC as telemetry channel; raises `WARNING_HI` at low threshold, `FATAL` at critical threshold |
+| `ScienceInferenceApplication` | Active | Hierarchical SM; receives mode from `SatStateMachine`; polls flash, invokes algorithms, stores results |
 
-**Ports exposed out of subtopology:**
-- `powerStateOut` → consumed by `SatStateMachine` for Standby submode activation decisions
+**ScienceInferenceApplication modes (received via `Sat.ScienceInferenceModePort`):**
 
-**Health monitoring:** `EpsManager` is health-monitored.
+| Mode | Behavior |
+|------|----------|
+| `Off` | Inactive. No flash polling. |
+| `ProcessImages` | Polls flash for unprocessed images; invokes LOST, FOUND, or SCOPE per experiment metadata; stores results; compresses flagged images |
 
-### 5.5 Thermal Subtopology
+**External libraries invoked directly from `ScienceInferenceApplication` C++ implementation:**
 
-**Purpose:** Monitors temperature sensors and commands heater to maintain operating temperature range.
+| Library | Algorithm | Camera | Experiment Type |
+|---------|-----------|--------|----------------|
+| LOST | Lost-in-space star identification | Camera 1 | L&F |
+| FOUND | Follow-up optical navigation | Camera 2 | L&F |
+| SCOPE | Star catalog optical processing (runs LOST internally) | Camera 1 + 2 | Calibration |
+
+**Health monitoring:** `ScienceInferenceApplication` is health-monitored.
+
+### 5.4 ADCS Subtopology
+
+**Purpose:** Attitude determination and control across all ADCS operating modes.
 
 **Components:**
 
 | Component | Type | Purpose |
 |-----------|------|---------|
-| `ThermalManager` | Active | Polls temperature sensors; commands heater based on configurable F' parameter thresholds; raises events on out-of-range readings |
-| `TemperatureSensorManager` | Active (worker) | State machine: [Startup] → Idle → Sampling → Idle / Error |
-| `HeaterManager` | Active (worker) | State machine: [Startup] → Off → HeatingUp → On → CoolingDown / Error |
+| `AdcsApplication` | Active (high priority) | Hierarchical SM; receives mode from `SatStateMachine`; runs attitude control loop |
+| `ImuManager` | Queued (worker) | State machine: RESET → WAIT_RESET → ENABLE → CONFIGURE → RUN / error→RESET |
+| `SunSensorManager` | Queued (worker) | State machine: RESET → WAIT_RESET → ENABLE → CONFIGURE → RUN / error→RESET |
+| `MagnetorquerManager` | Queued (worker) | State machine: RESET → WAIT_RESET → ENABLE → CONFIGURE → RUN / error→RESET |
 
-**Health monitoring:** `ThermalManager` is health-monitored. Hardware managers excluded.
+**AdcsApplication modes (received via `Sat.AdcsModePort`):**
+
+| Mode | Sensors | Actuators | Use |
+|------|---------|-----------|-----|
+| `Off` | None | None | Inactive |
+| `Detumble` | IMU, Magnetorquers | Magnetorquers | Safe mode — B-dot algorithm |
+| `SunPointing` | IMU, Sun Sensors | Magnetorquers | Standby/Charge — point panels at sun |
+| `AntennaPointing` | IMU, GNSS | Magnetorquers | Standby/Downlink — point antenna at ground station |
+| `EarthLimbPointing` | IMU, Star Tracker | Magnetorquers | Standby/Science — point FOUND camera at lit Earth limb, optimize solar |
+| `AttitudeHold` | IMU | Magnetorquers | Standby/Eclipse — hold current attitude |
+
+**AdcsApplication hierarchical SM:**
+
+```
+OFF
+DETUMBLE
+  └─ RUNNING
+SUN_POINTING
+  ├─ ACQUIRING
+  └─ TRACKING
+ANTENNA_POINTING
+  ├─ ACQUIRING
+  └─ TRACKING
+EARTH_LIMB_POINTING
+  ├─ ACQUIRING
+  └─ TRACKING
+ATTITUDE_HOLD
+  └─ HOLDING
+```
+
+Top-level `switchMode: Adcs.Mode` signal inherited by all leaf states.
+
+**Ports consumed from outside subtopology:**
+- `StarTrackerManager` attitude port (top-level, precision pointing)
+- `GnssManager` position/time port (top-level, timing reference + antenna pointing)
+- `modeIn: Sat.AdcsModePort` (from `SatStateMachine`)
+
+**Health monitoring:** `AdcsApplication` is health-monitored. Hardware managers excluded.
+
+### 5.5 Comms Subtopology
+
+**Purpose:** Manages the EnduroSat S-band radio for omni telemetry (always active) and high-gain downlink (Standby/Downlink mode only).
+
+**Components:**
+
+| Component | Type | Purpose |
+|-----------|------|---------|
+| `CommsApplication` | Active | Hierarchical SM; receives mode from `SatStateMachine`; manages radio operating mode |
+| `EnduroSatManager` | Active (worker) | State machine: RESET → WAIT_RESET → ENABLE → CONFIGURE → RUN / error→RESET. Bridges ComFprime to the S-band radio. |
+
+**CommsApplication modes (received via `Sat.CommsModePort`):**
+
+| Mode | Behavior |
+|------|----------|
+| `OmniOnly` | Low-rate omni telemetry only. Small packets. Always available. |
+| `HighGainDownlink` | Full high-rate downlink. Requires `AntennaPointing` from `AdcsApplication`. |
+
+**Health monitoring:** `CommsApplication` is health-monitored. `EnduroSatManager` excluded.
+
+### 5.6 EPS and Thermal (Hardware Manager Only)
+
+These subsystems have no application-level component. Hardware managers run continuously independent of satellite mode.
+
+| Component | Type | Purpose |
+|-----------|------|---------|
+| `EpsManager` | Active (worker) | Monitors battery SoC; publishes power state to `SatStateMachine`; raises `WARNING_HI` at low threshold, `FATAL` at critical threshold |
+| `ThermalManager` | Active | Polls temperature sensors; commands heater based on configurable thresholds; raises events on out-of-range readings |
+| `TemperatureSensorManager` | Queued (worker) | State machine: RESET → WAIT_RESET → ENABLE → CONFIGURE → RUN / error→RESET |
+| `HeaterManager` | Queued (worker) | State machine: RESET → WAIT_RESET → ENABLE → CONFIGURE → RUN / error→RESET |
+
+`EpsManager.powerStateOut` is consumed by `SatStateMachine` for submode activation decisions.
 
 ---
 
 ## 6. Top-Level Standalone Components
 
-These components are instantiated at the top-level topology and are not inside any subtopology.
-
 | Component | Type | Purpose |
 |-----------|------|---------|
-| `SatStateMachine` | Active | Owns the 3-mode satellite state machine with Standby submodes (Charge, Downlink, Science); evaluates submode conditions each 1 Hz tick |
-| `StarTrackerManager` | Active (worker) | State machine: [Startup] → Idle → Acquiring → Tracking → Idle / Error. Shared by Science and ADCS |
-| `GnssManager` | Active (worker) | State machine: [Startup] → Idle → Acquiring → Tracking → Idle / Error. Shared by Science, ADCS, and time services |
-| `EnduroSatManager` | Active (worker) | State machine: [Startup] → Idle → Transmitting / Receiving → Idle / Error. Bridges ComFprime to the EnduroSat S-band radio |
+| `SatStateMachine` | Active | Owns satellite mode logic; evaluates submode conditions each 1 Hz tick; sends mode commands to all application components via typed ports |
+| `StarTrackerManager` | Active (worker) | Shared by DataCollectionApplication and AdcsApplication |
+| `GnssManager` | Active (worker) | Shared by DataCollectionApplication, AdcsApplication, and SatStateMachine |
 | `RateGroupDriver` | Passive | Divides hardware timer interrupt into multiple rate signals |
 | `RateGroup1` | Active | 10 Hz scheduling |
 | `RateGroup2` | Active | 1 Hz scheduling |
@@ -227,105 +305,159 @@ These components are instantiated at the top-level topology and are not inside a
 
 | Rate Group | Frequency | Scheduled Components |
 |------------|-----------|---------------------|
-| `RateGroup1` | 10 Hz | `AdcsManager`, `ImuManager`, `SunSensorManager`, `MagnetorquerManager`, watchdog stroke |
-| `RateGroup2` | 1 Hz | `SatStateMachine`, `EpsManager`, `ThermalManager`, `ScienceManager` (availability check), `Health` |
-| `RateGroup3` | 0.1 Hz | `StarTrackerManager`, `GnssManager`, `SystemResources`, `FileDownlink` |
+| `RateGroup1` | 10 Hz | `AdcsApplication`, `ImuManager`, `SunSensorManager`, `MagnetorquerManager`, watchdog stroke |
+| `RateGroup2` | 1 Hz | `SatStateMachine`, `EpsManager`, `ThermalManager`, `DataCollectionApplication` (availability check), `Health` |
+| `RateGroup3` | 0.1 Hz | `StarTrackerManager`, `GnssManager`, `ScienceInferenceApplication`, `SystemResources`, `FileDownlink` |
 
 ---
 
 ## 8. SatStateMachine Design
 
-`SatStateMachine` is an Active component implementing the satellite state machine with `Fw::Sm`.
+`SatStateMachine` is an Active component. It evaluates all submode conditions each 1 Hz tick and sends the resulting mode to every application component via dedicated typed ports.
 
-### Main Mode Transitions
+### Mode Output Ports
+
+One typed output port per application component. Each port carries that application's own mode enum. `SatStateMachine` owns the translation table.
+
+```fpp
+module Sat {
+    port AdcsModePort(mode: Adcs.Mode)
+    port DataColModePort(mode: DataCollection.Mode)
+    port ScienceInferenceModePort(mode: ScienceInference.Mode)
+    port CommsModePort(mode: Comms.Mode)
+}
+```
+
+Application components have no knowledge of `Sat::Mode` or `Sat::StandbySubmode`. They only receive and act on their own mode enum.
+
+### Condition Inputs
+
+| Port | Source | Data |
+|------|--------|------|
+| `powerStateIn` | `EpsManager` | State of charge + above/below threshold |
+| `sunEclipseIn` | Sun sensors + `GnssManager` | In sun / in eclipse |
+| `orbitStateIn` | `GnssManager` | Over ground station flag |
+| `downlinkQueueDepthIn` | `ComQueue` | Current queue depth (bytes) |
+
+### Translation Table
+
+| Satellite State | `AdcsApplication` | `DataCollectionApplication` | `ScienceInferenceApplication` | `CommsApplication` |
+|----------------|-------------------|----------------------------|-------------------------------|-------------------|
+| Safe | Detumble | Off | Off | OmniOnly |
+| Standby/Downlink | AntennaPointing | Off | Off | HighGainDownlink |
+| Standby/Science | EarthLimbPointing | RunExperiment | ProcessImages | OmniOnly |
+| Standby/Charge | SunPointing | Off | Off | OmniOnly |
+| Standby/Eclipse | AttitudeHold | Off | Off | OmniOnly |
+
+### Mode Transitions
 
 | From | To | Trigger |
 |------|----|---------|
-| Checkout | Standby | Ground command: `CHECKOUT_COMPLETE` |
+| Safe | Standby | Ground command `SAFE_EXIT` (only after checkout completed) |
 | Any | Safe | Ground command `SAFE_MODE` or `EpsManager` `FATAL` event |
-| Safe | Standby | Ground command: `SAFE_EXIT` |
+| Standby | submode | Condition evaluation each 1 Hz tick |
 
-### Standby Submode Logic (evaluated each 1 Hz tick)
-
-Idle is the base Standby state — not a named state, but the condition where no submode is active. All submodes inherit from it.
-
-| Submode | Enter When | Exit When |
-|---------|-----------|-----------|
-| Downlink | Enough power AND over ground station | No longer over ground station OR power below threshold |
-| Science | NOT Downlink AND enough power AND `EXPERIMENT_ENABLED` | Downlink activates OR power drops below threshold OR `EXPERIMENT_ENABLED` cleared |
-| Charge | Sun present AND NOT Downlink AND NOT Science | Downlink or Science activates OR sun not present |
-
-**Priority:** Downlink > Science > Charge.
-
-### Parameters (persisted via `PrmDb`)
-
-| Parameter | Description |
-|-----------|-------------|
-| `POWER_THRESHOLD` | Minimum EPS state of charge (%) for Downlink or Science activation |
-| `EXPERIMENT_ENABLED` | Ground-set boolean enabling the Science submode |
-
-**Events emitted:** main mode and submode entry/exit events for every transition.
+**Events emitted:** mode and submode entry/exit events for every transition.
 
 **Health checked:** Yes.
 
 ---
 
-## 9. Key Cross-Subtopology Wiring
+## 9. Application Component State Machine Pattern
 
-| Source | Destination | Data |
-|--------|-------------|------|
-| `StarTrackerManager` | `ScienceManager` | Attitude reading (synchronized capture) |
-| `StarTrackerManager` | `AdcsManager` | Attitude reading (precision pointing) |
-| `GnssManager` | `ScienceManager` | Position + time (synchronized capture) |
-| `GnssManager` | `AdcsManager` | Position + timing reference |
-| `GnssManager` | Time services | PPS timing signal |
-| `EpsManager.powerStateOut` | `SatStateMachine` | Battery state of charge |
-| `SatStateMachine` | `AdcsManager` | Mode commands |
-| `SatStateMachine` | `ScienceManager` | Mode commands |
-| `EnduroSatManager` | `ComFprime` | Uplink/downlink byte stream |
-| `Science` | `DataProducts` | Science result data products |
-| `Science` | `FileHandling` | Flagged image files |
+All application components use **hierarchical F' state machines** (`Fw::Sm`) where:
+
+- **Mode is the top-level state** — each mode is a parent state in the SM
+- **Operational substates are nested inside** each mode
+- **A single `switchMode` signal** is defined once at the top level and inherited by all leaf states (per FPP inherited transitions — `nasa/fpp` [`Defining-State-Machines.adoc#inherited-transitions`](https://github.com/nasa/fpp/blob/main/docs/users-guide/Defining-State-Machines.adoc#inherited-transitions))
+- **Entry/exit actions** follow the FPP Least Common Ancestor rule automatically — mode switches correctly unwind and re-enter
+- **Each mode re-entry always starts from its `initial` substate** — no history
+
+Each parent state requires one `initial` specifier per FPP rules ([`#substates`](https://github.com/nasa/fpp/blob/main/docs/users-guide/Defining-State-Machines.adoc#substates)).
+
+**Idempotency:** Application components ignore mode-switch calls for the mode already active.
 
 ---
 
-## 10. Health Monitoring Summary
+## 10. Hardware Manager State Machine Pattern
 
-Components enrolled in `Svc::Health` ping/pong monitoring:
+All hardware managers use a single flat F' state machine following the `fprime-community/fprime-sensors` `ImuManager` pattern:
+
+```
+RESET → WAIT_RESET → ENABLE → CONFIGURE → RUN
+  ↑_____________ error from any state ___________|
+```
+
+- Driven by rate group tick (`schedIn`)
+- Each state action calls a helper function returning bus status (`Drv::I2cStatus` or equivalent)
+- On error: log `WARNING_HI` (throttled), send `error` signal → back to RESET (self-healing)
+- Configuration via F' parameters — `parameterUpdated()` sends `reconfigure` signal → RUN → CONFIGURE
+- No satellite mode awareness
+
+Reference: [`fprime-community/fprime-sensors/ImuManager`](https://github.com/fprime-community/fprime-sensors/tree/devel/fprime-sensors/MpuImu/Components/ImuManager)
+
+---
+
+## 11. Key Cross-Subtopology Wiring
+
+| Source | Destination | Data |
+|--------|-------------|------|
+| `StarTrackerManager` | `DataCollectionApplication` | Attitude reading (synchronized capture) |
+| `StarTrackerManager` | `AdcsApplication` | Attitude reading (precision pointing) |
+| `GnssManager` | `DataCollectionApplication` | Position + time (synchronized capture) |
+| `GnssManager` | `AdcsApplication` | Position + timing reference |
+| `GnssManager` | `SatStateMachine` | Orbital state (over ground station, sun/eclipse) |
+| `GnssManager` | Time services | PPS timing signal |
+| `EpsManager.powerStateOut` | `SatStateMachine` | Battery state of charge |
+| `SatStateMachine.adcsModeOut` | `AdcsApplication` | Mode command (`Adcs.Mode`) |
+| `SatStateMachine.dataColModeOut` | `DataCollectionApplication` | Mode command (`DataCollection.Mode`) |
+| `SatStateMachine.scienceInferenceModeOut` | `ScienceInferenceApplication` | Mode command (`ScienceInference.Mode`) |
+| `SatStateMachine.commsModeOut` | `CommsApplication` | Mode command (`Comms.Mode`) |
+| `EnduroSatManager` | `ComFprime` | Uplink/downlink byte stream |
+| `DataCollection` | `DataProducts` | Science result data products |
+| `DataCollection` | `FileHandling` | Flagged image files |
+
+---
+
+## 12. Health Monitoring Summary
 
 | Component | Subtopology |
 |-----------|-------------|
 | `SatStateMachine` | Top-level |
-| `ScienceManager` | Science |
-| `AdcsManager` | ADCS |
-| `EpsManager` | EPS |
-| `ThermalManager` | Thermal |
+| `DataCollectionApplication` | DataCollection |
+| `ScienceInferenceApplication` | ScienceInference |
+| `AdcsApplication` | ADCS |
+| `CommsApplication` | Comms |
+| `EpsManager` | Top-level |
+| `ThermalManager` | Top-level |
 | `cmdDisp` | CdhCore |
 | `events` | CdhCore |
 
-All hardware manager workers and science workers (`LostWorker`, `FoundWorker`) are excluded from health monitoring per the F' health checking pattern.
+All hardware managers and workers excluded from health monitoring.
 
 ---
 
-## 11. Design Pattern References
+## 13. Design Pattern References
 
 | Pattern | Applied To | F' Documentation |
 |---------|-----------|-----------------|
-| Manager-Worker | `ScienceManager` + `LostWorker` + `FoundWorker`; all hardware managers | `docs/user-manual/design-patterns/manager-worker.md` |
-| App-Manager-Driver | All subsystems (Science, ADCS, EPS, Thermal) | `docs/user-manual/design-patterns/app-man-drv.md` |
-| Subtopologies | Science, ADCS, EPS, Thermal, + 4 pre-built | `docs/user-manual/design-patterns/subtopologies.md` |
-| Rate Groups | RateGroup1/2/3 driven by RateGroupDriver | `docs/user-manual/design-patterns/rate-group.md` |
-| Health Checking | All application-level active components | `docs/user-manual/design-patterns/health-checking.md` |
-| Callback Ports | Synchronized capture in ScienceManager | `docs/user-manual/design-patterns/common-port-patterns.md` |
-| State Machines | SatStateMachine + all hardware managers | `docs/user-manual/framework/state-machines.md` |
+| App-Manager-Driver | All subsystems | `docs/user-manual/design-patterns/app-man-drv.md` |
+| Hierarchical State Machine | All application components | [`nasa/fpp Defining-State-Machines.adoc#substates`](https://github.com/nasa/fpp/blob/main/docs/users-guide/Defining-State-Machines.adoc#substates) |
+| Hardware Manager SM (flat) | All hardware managers | [`fprime-sensors/ImuManager`](https://github.com/fprime-community/fprime-sensors/tree/devel/fprime-sensors/MpuImu/Components/ImuManager) |
+| Subtopologies | DataCollection, ScienceInference, ADCS, Comms + 4 pre-built | `docs/user-manual/design-patterns/subtopologies.md` |
+| Rate Groups | RateGroup1/2/3 | `docs/user-manual/design-patterns/rate-group.md` |
+| Health Checking | All application-level components | `docs/user-manual/design-patterns/health-checking.md` |
+| Callback Ports | Synchronized capture in DataCollectionApplication | `docs/user-manual/design-patterns/common-port-patterns.md` |
 | Data Products | Science algorithm results | `docs/user-manual/framework/data-products.md` |
 
 ---
 
-## 12. External Library Integration
+## 14. External Library Integration
 
-| Library | Algorithm | Camera | Integration |
-|---------|-----------|--------|-------------|
-| LOST | Optical navigation | Camera 1 | CMake; called from `LostWorker` |
-| FOUND | Optical navigation | Camera 2 | CMake; called from `FoundWorker` |
+| Library | Algorithm | Camera | Experiment Type | Integration |
+|---------|-----------|--------|----------------|-------------|
+| LOST | Optical navigation | Camera 1 | L&F | CMake; called from `ScienceInferenceApplication` |
+| FOUND | Optical navigation | Camera 2 | L&F | CMake; called from `ScienceInferenceApplication` |
+| SCOPE | Star catalog processing (runs LOST internally) | Camera 1 + 2 | Calibration | CMake; called from `ScienceInferenceApplication` |
 
-Both libraries are C++ and included as CMake dependencies. Workers call the library entry points synchronously within their async port handlers, allowing the rest of the system to remain responsive during algorithm execution.
+All libraries are C++ and included as CMake dependencies. `ScienceInferenceApplication` selects the algorithm based on experiment type metadata stored with each image.
