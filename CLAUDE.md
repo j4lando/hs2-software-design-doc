@@ -21,7 +21,7 @@ fprime-repo-summary.md                           # F' framework reference guide 
 
 The satellite uses **F' (F Prime)** (`nasa/fprime@devel`), a NASA JPL component-driven embedded framework. The design follows a strict **three-layer App-Manager-Driver** architecture:
 
-- **Layer 3 — Application (`*Application`):** `AdcsApplication`, `DataCollectionApplication`, `ScienceInferenceApplication`, `CommsApplication`; packaged inside custom subtopologies (ADCS, DataCollection, ScienceInference, Comms) plus pre-built CdhCore, ComFprime, FileHandling, DataProducts. Each has a **hierarchical F' state machine** where mode is the top-level state and operational substates are nested inside. Receive mode commands from `SatStateMachine` via typed ports.
+- **Layer 3 — Application (`*Application`):** `AdcsApplication`, `DataCollectionApplication`, `ScienceInferenceApplication`, `CommsApplication`; packaged inside custom subtopologies (ADCS, DataCollection, ScienceInference, Comms) plus pre-built CdhCore, ComCcsds, FileHandling, DataProducts. Each has a **hierarchical F' state machine** where mode is the top-level state and operational substates are nested inside. Receive mode commands from `SatStateMachine` via typed ports.
 - **Layer 2 — Managers (`*Manager`):** Hardware device managers — `ImuManager`, `Camera1Manager`, `StarTrackerManager`, etc. Single flat SM: `RESET → WAIT_RESET → ENABLE → CONFIGURE → RUN`. No satellite mode awareness. Reference: `fprime-community/fprime-sensors` ImuManager.
 - **Layer 1 — Drivers (`*Driver`):** F' native bus drivers with no device knowledge (LinuxI2cDriver, LinuxSpiDriver, LinuxUartDriver, LinuxGpioDriver)
 
