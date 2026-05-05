@@ -49,3 +49,25 @@ Follow the structure established in `docs/DataCollection/DataCollectionApplicati
 5. **Notes** — cross-subtopology wiring, constraints, deferred items
 
 Port types use F' framework types (`Svc.Sched`, `Fw.Cmd`, `Fw.Dp`, `Fw.Log`, `Fw.Tlm`, `Svc.Ping`, `Fw.PrmGet`).
+
+## Architecture Status (as of 2026-04-21)
+
+### Established Decisions
+
+- Three-layer architecture is locked: Layer 3 `*Application`, Layer 2 `*Manager`, Layer 1 `*Driver`.
+- `SatStateMachine` owns top-level mode logic; sends typed mode commands to each Layer 3 app via dedicated ports.
+- Layer 3 hierarchical SMs are established for `AdcsApplication`, `DataCollectionApplication`, `ScienceInferenceApplication`, `CommsApplication`.
+- Layer 2 flat SM pattern (`RESET → WAIT_RESET → ENABLE → CONFIGURE → RUN`) is established for all hardware managers.
+- Top-level modes: `Safe` and `Standby`; Standby submodes: `Downlink`, `Science`, `Charge`, `Eclipse`.
+
+### Open Questions
+
+- **EPS:** `EpsManager` as standalone Layer 2, or introduce a Layer 3 `EpsApplication` for mode-aware power/fault logic?
+- **Thermal:** `ThermalManager`-only, or add a Layer 3 `ThermalApplication` if control logic needs mode awareness?
+- **CDH decomposition:** Map command handling, storage, parameters, health, and downlink from the PDF into F' pre-built components and any required custom pieces.
+- **Ground software docs:** Translate ground-software chapter from the PDF into markdown, or mark out of scope.
+- **Mode-switch behavior:** Define mid-operation mode-change handling for `DataCollectionApplication` and `AdcsApplication`.
+
+### Immediate Next Step
+
+Decide EPS architecture first — smallest unresolved question that determines whether additional Layer 3 app docs are needed.
