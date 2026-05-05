@@ -2,9 +2,9 @@
 
 ## 1. Overview
 
-`HardwareResetManager` is a Layer 2 Queued component that monitors the current-sense signals for each protected power rail. On each rate group tick it reads the current sense value for each monitored component; if any rail exceeds its hardcoded overcurrent threshold, it asserts the corresponding reset GPIO and emits overcurrent and reset events.
+`HardwareResetManager` is a Layer 2 Passive component. It receives a fault notification from a fault-counting component in CdhCore after `MpptIcManager` has emitted a threshold number of consecutive `WARNING_HI` events about a specific power rail or voltage line. On receipt it emits a hardware-reset event and calls `SatStateMachine` to report the fault so the satellite can take appropriate action.
 
-`HardwareResetManager` operates independently of `EPSApplication` and has no satellite mode awareness.
+`HardwareResetManager` has no satellite mode awareness and no state machine.
 
 ---
 
@@ -18,15 +18,14 @@ TODO
 
 ### 3.1 Component Type
 
-Active component. No state machine — behavior is fully determined by rate group ticks with no initialization sequence or recovery states.
+Passive component. No thread, no queue. Called synchronously by the CdhCore fault-counter on its thread.
 
 ### 3.2 Ports
 
 | Port | Direction | Type | Purpose |
 |------|-----------|------|---------|
-| `schedIn` | Input | `Svc.Sched` | Rate group tick; triggers current-sense read cycle |
-| `currentSenseIn[N]` | Input | TBD — `Drv.GpioRead`, I2C, or ADC port | One port per monitored power rail; exact interface TBD pending hardware confirmation |
-| `resetOut[N]` | Output | `Drv.GpioWrite` | One per monitored component; asserted when that rail exceeds its overcurrent threshold |
+| `hardwareFaultIn` | Input | Custom port (line/component ID) | Called by CdhCore fault-counter after N consecutive warnings about a rail; carries identifier of the affected line |
+| `faultNotifyOut` | Output | Custom port (line/component ID) | Notifies `SatStateMachine` of the hardware fault; carries same identifier |
 | `logOut` | Output | `Fw.Log` | Event logging |
 
 ### 3.3 Commands
@@ -37,13 +36,13 @@ None.
 
 ## 4. Operational Behavior
 
-On each `schedIn` tick, `HardwareResetManager` reads the current-sense input for each monitored power rail. For any rail exceeding its hardcoded overcurrent threshold, it asserts the corresponding `resetOut` GPIO, emits a `WARNING_HI` overcurrent event (including rail ID and measured value), and emits a reset-asserted event.
+On `hardwareFaultIn` call: emit `WARNING_HI` hardware-fault event (including line/component ID), then call `faultNotifyOut` to notify `SatStateMachine`.
 
 ---
 
 ## 5. Notes
 
-- Overcurrent thresholds are currently hardcoded constants in the component implementation. However, it might make sense to have these as parameters stored in a parameter database, not entirely sure.
-- Current-sense interface is hardware-dependent and unconfirmed. At least one current-sense IC may use I2C; others may use GPIO or analog (requiring an ADC driver). Interface type to be confirmed with the hardware team.
-- `HardwareResetManager` should probably report reset events to `EPSApplication`, but this isn't currently in the specification. Whether a notification port is needed is deferred to detailed design. to have a component that is not the sat state machine with the power to turn off components. We may want a dedicated `OffManager` that takes requests/complaints from many different sources, and tries to reset components in various different ways (i.e. sending an off command, then pulling a reset pin high, then shutting off power. This last one may not be a possibility for many components due to hardware limitations.)
-- Number of monitored rails (N) TBD pending hardware finalization.
+- The fault-counting mechanism in CdhCore — tracking N consecutive `WARNING_HI` events from `MpptIcManager` about a specific rail — requires a component with that logic. No standard F' service component provides event-count-based triggering; a custom fault-counter component may be needed, or the count can be tracked inside `MpptIcManager` directly. To be resolved during detailed design.
+- Whether `HardwareResetManager` also asserts a hardware GPIO reset line for the affected component (before or after notifying `SatStateMachine`) is TBD pending hardware team confirmation of which rails have software-controllable reset pins.
+- `SatStateMachine` is responsible for deciding the response to the fault notification — e.g., entering Safe mode or issuing a component recovery command.
+- Number and identity of monitored rails (N) TBD pending hardware finalization.

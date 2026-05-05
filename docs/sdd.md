@@ -277,11 +277,11 @@ Top-level `switchMode: Adcs.Mode` signal inherited by all leaf states.
 
 | Component | Type | Purpose |
 |-----------|------|---------|
-| `EPSApplication` | Active | Command-driven orchestrator; reads battery state from `MpptIcManager`; publishes `powerStateOut` to `SatStateMachine`; forwards charging, MPPT, and threshold commands to `MpptIcManager`; forwards deploy command to `DeployPanelsManager`. No mode interface. |
-| `MpptIcManager` | Active (worker) | Sole owner of BQ25756 IC over I2C; custom two-state SM: UNINITIALIZED → RUNNING; reads measurements each tick; handles fault recovery via INT interrupt |
-| `HardwareResetManager` | Active (worker) | Monitors current-sense signals on each tick; asserts reset GPIO on overcurrent detection; no state machine |
+| `EPSApplication` | Active | Command-driven orchestrator; reads battery state from `MpptIcManager`; publishes `powerStateOut` to `SatStateMachine`; forwards `SET_IC_REGISTER` commands to `MpptIcManager` via `setRegister` port; forwards deploy command to `DeployPanelsManager`. No mode interface. |
+| `MpptIcManager` | Active (worker) | Sole owner of BQ25756 IC over I2C; custom two-state SM: UNINITIALIZED → RUNNING; reads measurements each tick; accepts `setRegister` calls from `EPSApplication`; handles fault recovery via INT interrupt |
+| `HardwareResetManager` | Passive | Receives fault notification from CdhCore fault-counter (after N consecutive `MpptIcManager` warnings about a rail); notifies `SatStateMachine` |
 | `WatchdogPinger` | Passive | Toggles hardware watchdog GPIO pin on each rate group tick |
-| `DeployPanelsManager` | Active | Executes burn wire deployment sequence on command; state machine: IDLE → DEPLOYING → DEPLOYED |
+| `DeployPanelsManager` | Active | Two-state SM: NOT_DEPLOYED → DEPLOYED; executes burn wire sequence in both states; emits WARNING_HI on re-attempt in DEPLOYED state |
 
 `EPSApplication.powerStateOut` is consumed by `SatStateMachine` for submode activation decisions.
 
@@ -321,7 +321,7 @@ No application-level component. Hardware managers run continuously independent o
 
 | Rate Group | Frequency | Scheduled Components |
 |------------|-----------|---------------------|
-| `RateGroup1` | 10 Hz | `AdcsApplication`, `ImuManager`, `SunSensorManager`, `MagnetorquerManager`, `HardwareResetManager`, `WatchdogPinger` |
+| `RateGroup1` | 10 Hz | `AdcsApplication`, `ImuManager`, `SunSensorManager`, `MagnetorquerManager`, `WatchdogPinger` |
 | `RateGroup2` | 1 Hz | `SatStateMachine`, `EPSApplication`, `MpptIcManager`, `ThermalManager`, `DataCollectionApplication` (availability check), `Health` |
 | `RateGroup3` | 0.1 Hz | `StarTrackerManager`, `GnssManager`, `ScienceInferenceApplication`, `SystemResources`, `FileDownlink` |
 
@@ -370,7 +370,7 @@ Application components have no knowledge of `Sat::Mode` or `Sat::StandbySubmode`
 | From | To | Trigger |
 |------|----|---------|
 | Safe | Standby | Ground command `SAFE_EXIT` (only after checkout completed) |
-| Any | Safe | Ground command `SAFE_MODE` or `EPSApplication` `FATAL` event |
+| Any | Safe | Ground command `SAFE_MODE`, `EPSApplication` `FATAL` event, or `HardwareResetManager` fault notification |
 | Standby | submode | Condition evaluation each 1 Hz tick |
 
 **Events emitted:** mode and submode entry/exit events for every transition.
