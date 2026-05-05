@@ -84,24 +84,35 @@ Evaluated each 1 Hz tick by `SatStateMachine` in priority order. The highest-pri
 
 ## 4. Architecture Overview
 
-The flight software uses a **three-layer App-Manager-Driver architecture**. Component names reflect their layer:
+The flight software uses a **five-layer architecture**. Component names reflect their layer:
 
 ```
+Layer 5 — System Infrastructure
+    CdhCore (CmdDispatcher, EventManager, Health, Version, AssertFatalAdapter, fatalHandler)
+    HardwareResetManager [future]
+
+Layer 4 — Mission Orchestration
+    SatStateMachine
+
 Layer 3 — Application components (*Application)
     DataCollectionApplication | ScienceInferenceApplication
     AdcsApplication | CommsApplication | EPSApplication
-    + pre-built subtopologies: CdhCore | ComCcsds | FileHandling | DataProducts
+    + pre-built subtopologies: ComCcsds | FileHandling | DataProducts
 
 Layer 2 — Hardware Managers (*Manager)
     Camera1Manager | Camera2Manager | StarTrackerManager | GnssManager
     ImuManager | SunSensorManager | MagnetorquerManager
-    MpptIcManager | HardwareResetManager | WatchdogPinger | DeployPanelsManager
+    MpptIcManager | WatchdogPinger | DeployPanelsManager
     ThermalManager | TemperatureSensorManager | HeaterManager
     EnduroSatManager
 
 Layer 1 — F' Native Bus Drivers (*Driver)
     LinuxI2cDriver | LinuxSpiDriver | LinuxUartDriver | LinuxGpioDriver
 ```
+
+**System infrastructure** (Layer 5) provides the satellite-wide backbone: command routing (`CmdDispatcher`), event logging and FATAL escalation (`EventManager → fatalHandler`), component liveness monitoring (`Health`), and version reporting. All other layers depend on Layer 5 services. `HardwareResetManager` is reserved for future Layer 5 work alongside a general-purpose `FaultManager`.
+
+**Mission orchestration** (Layer 4) is `SatStateMachine` — it evaluates submode conditions each 1 Hz tick and sends typed mode commands to all Layer 3 application components. It has no hardware knowledge and never talks to Layer 2 or below directly.
 
 **Application components** (Layer 3) contain mission logic and dispatch work to hardware managers, never talking directly to drivers. Most receive mode-switch commands from `SatStateMachine` and use a hierarchical F' state machine (`Fw::Sm`) where mode is the top-level state and operational substates are nested inside. `EPSApplication` is the exception — it has no mode port and no hierarchical SM, running continuously and responding only to rate group ticks and commands. See §9 for the standard pattern and §5.6 for the EPS exception.
 
@@ -115,16 +126,28 @@ Layer 1 — F' Native Bus Drivers (*Driver)
 
 ## 5. Subtopology Decomposition
 
-### 5.1 Pre-Built Subtopologies
+### 5.1 Layer 5 — CdhCore Subtopology
+
+`CdhCore` is the pre-built system infrastructure subtopology. It is the entry and exit point for all external communication and provides satellite-wide services consumed by every other layer.
+
+| Component | Purpose |
+|-----------|---------|
+| `cmdDisp` (Svc.CmdDispatcher) | Routes uplink commands to all registered components |
+| `events` (Svc.EventManager) | Collects and downlinks events; routes `FATAL`-severity events via `FatalAnnounce → fatalHandler` |
+| `$health` (Svc.Health) | Ping-based liveness monitoring for all critical active components |
+| `fatalHandler` (Svc.FatalHandler) | Resets the system on `FATAL` event; satellite reboots into Safe mode |
+| `fatalAdapter` (Svc.AssertFatalAdapter) | Converts C++ assert failures to `FATAL` events |
+| `version` (Svc.Version) | Reports software version |
+
+### 5.2 Layer 3 Pre-Built Subtopologies
 
 | Subtopology | Source | Purpose |
 |-------------|--------|---------|
-| `CdhCore` | `Svc/Subtopologies/CdhCore` | CmdDispatcher, EventManager, Health, Version, AssertFatalAdapter |
 | `ComCcsds` | `Svc/Subtopologies/ComCcsds` | CCSDS communications stack; Space Packet and TM/TC frame framing, uplink/downlink pipeline |
 | `FileHandling` | `Svc/Subtopologies/FileHandling` | FileUplink, FileDownlink, FileManager, PrmDb |
 | `DataProducts` | `Svc/Subtopologies/DataProducts` | DpManager, DpWriter, DpCatalog for science results |
 
-### 5.2 DataCollection Subtopology
+### 5.3 DataCollection Subtopology
 
 **Purpose:** Executes data collection experiments — powers on cameras, acquires synchronized images and navigation data, stores results to flash, and reports outcome to `SatStateMachine`.
 
@@ -170,7 +193,7 @@ Top-level `switchMode` signal inherited by all leaf states — mode switch valid
 
 **Health monitoring:** `DataCollectionApplication` is health-monitored. Camera managers excluded.
 
-### 5.3 ScienceInference Subtopology
+### 5.4 ScienceInference Subtopology
 
 **Purpose:** Processes raw images stored on flash by running LOST, FOUND, or SCOPE. Operates on a scheduled polling cycle. Schedule-driven; receives no ground commands.
 
@@ -197,7 +220,7 @@ Top-level `switchMode` signal inherited by all leaf states — mode switch valid
 
 **Health monitoring:** `ScienceInferenceApplication` is health-monitored.
 
-### 5.4 ADCS Subtopology
+### 5.5 ADCS Subtopology
 
 **Purpose:** Attitude determination and control across all ADCS operating modes.
 
@@ -249,7 +272,7 @@ Top-level `switchMode: Adcs.Mode` signal inherited by all leaf states.
 
 **Health monitoring:** `AdcsApplication` is health-monitored. Hardware managers excluded.
 
-### 5.5 Comms Subtopology
+### 5.6 Comms Subtopology
 
 **Purpose:** Manages the EnduroSat S-band radio for omni telemetry (always active) and high-gain downlink (Standby/Downlink mode only).
 
@@ -269,7 +292,7 @@ Top-level `switchMode: Adcs.Mode` signal inherited by all leaf states.
 
 **Health monitoring:** `CommsApplication` is health-monitored. `EnduroSatManager` excluded.
 
-### 5.6 EPS Subtopology
+### 5.7 EPS Subtopology
 
 **Purpose:** Monitors battery and power system health, accepts power configuration and panel deployment commands from ground and `SatStateMachine`, and publishes power state to `SatStateMachine` for submode decisions. Runs continuously independent of satellite mode.
 
@@ -278,8 +301,7 @@ Top-level `switchMode: Adcs.Mode` signal inherited by all leaf states.
 | Component | Type | Purpose |
 |-----------|------|---------|
 | `EPSApplication` | Active | Command-driven orchestrator; reads battery state from `MpptIcManager`; publishes `powerStateOut` to `SatStateMachine`; forwards `SET_IC_REGISTER` commands to `MpptIcManager` via `setRegister` port; forwards deploy command to `DeployPanelsManager`. No mode interface. |
-| `MpptIcManager` | Active (worker) | Sole owner of BQ25756 IC over I2C; custom two-state SM: UNINITIALIZED → RUNNING; reads measurements each tick; accepts `setRegister` calls from `EPSApplication`; handles fault recovery via INT interrupt |
-| `HardwareResetManager` | Passive | Receives fault notification from CdhCore fault-counter (after N consecutive `MpptIcManager` warnings about a rail); notifies `SatStateMachine` |
+| `MpptIcManager` | Active (worker) | Sole owner of BQ25756 IC over I2C; custom two-state SM: UNINITIALIZED → RUNNING; reads measurements each tick; per-rail consecutive-fault counter emits WARNING_HI each bad reading and FATAL after N consecutive bad readings; handles IC fault recovery via INT interrupt |
 | `WatchdogPinger` | Passive | Toggles hardware watchdog GPIO pin on each rate group tick |
 | `DeployPanelsManager` | Active | Two-state SM: NOT_DEPLOYED → DEPLOYED; executes burn wire sequence in both states; emits WARNING_HI on re-attempt in DEPLOYED state |
 
@@ -287,7 +309,7 @@ Top-level `switchMode: Adcs.Mode` signal inherited by all leaf states.
 
 **Health monitoring:** `EPSApplication` is health-monitored. Hardware managers excluded.
 
-### 5.7 Thermal (Hardware Manager Only)
+### 5.8 Thermal (Hardware Manager Only)
 
 No application-level component. Hardware managers run continuously independent of satellite mode.
 
@@ -301,19 +323,20 @@ No application-level component. Hardware managers run continuously independent o
 
 ## 6. Top-Level Standalone Components
 
-| Component | Type | Purpose |
-|-----------|------|---------|
-| `SatStateMachine` | Active | Owns satellite mode logic; evaluates submode conditions each 1 Hz tick; sends mode commands to all application components via typed ports |
-| `StarTrackerManager` | Active (worker) | Shared by DataCollectionApplication and AdcsApplication |
-| `GnssManager` | Active (worker) | Shared by DataCollectionApplication, AdcsApplication, and SatStateMachine |
-| `RateGroupDriver` | Passive | Divides hardware timer interrupt into multiple rate signals |
-| `RateGroup1` | Active | 10 Hz scheduling |
-| `RateGroup2` | Active | 1 Hz scheduling |
-| `RateGroup3` | Active | 0.1 Hz scheduling |
-| `LinuxI2cDriver` (×N) | Passive | One instance per I2C bus |
-| `LinuxSpiDriver` (×N) | Passive | One instance per SPI bus |
-| `LinuxUartDriver` (×N) | Passive | One instance per UART (star tracker, GNSS, radio) |
-| `LinuxGpioDriver` (×N) | Passive | One instance per GPIO group (magnetorquers, heater) |
+`SatStateMachine` (Layer 4) is described in §8. The components below are instantiated at the top-level topology because they are shared across multiple subtopologies or provide satellite-wide scheduling and bus infrastructure.
+
+| Component | Layer | Type | Purpose |
+|-----------|-------|------|---------|
+| `StarTrackerManager` | 2 | Active (worker) | Shared by DataCollectionApplication and AdcsApplication |
+| `GnssManager` | 2 | Active (worker) | Shared by DataCollectionApplication, AdcsApplication, and SatStateMachine |
+| `RateGroupDriver` | — | Passive | Divides hardware timer interrupt into multiple rate signals |
+| `RateGroup1` | — | Active | 10 Hz scheduling |
+| `RateGroup2` | — | Active | 1 Hz scheduling |
+| `RateGroup3` | — | Active | 0.1 Hz scheduling |
+| `LinuxI2cDriver` (×N) | 1 | Passive | One instance per I2C bus |
+| `LinuxSpiDriver` (×N) | 1 | Passive | One instance per SPI bus |
+| `LinuxUartDriver` (×N) | 1 | Passive | One instance per UART (star tracker, GNSS, radio) |
+| `LinuxGpioDriver` (×N) | 1 | Passive | One instance per GPIO group (magnetorquers, heater) |
 
 ---
 
@@ -370,7 +393,7 @@ Application components have no knowledge of `Sat::Mode` or `Sat::StandbySubmode`
 | From | To | Trigger |
 |------|----|---------|
 | Safe | Standby | Ground command `SAFE_EXIT` (only after checkout completed) |
-| Any | Safe | Ground command `SAFE_MODE`, `EPSApplication` `FATAL` event, or `HardwareResetManager` fault notification |
+| Any | Safe | Ground command `SAFE_MODE`; `EPSApplication` `FATAL` event (critical battery); or `MpptIcManager` `FATAL` event (N consecutive bad rail voltage readings) — all FATAL events route through `EventManager.FatalAnnounce → fatalHandler`; system reboots into Safe mode |
 | Standby | submode | Condition evaluation each 1 Hz tick |
 
 **Events emitted:** mode and submode entry/exit events for every transition.
@@ -462,7 +485,7 @@ All hardware managers and workers excluded from health monitoring.
 | App-Manager-Driver | All subsystems | `docs/user-manual/design-patterns/app-man-drv.md` |
 | Hierarchical State Machine | All application components | [`nasa/fpp Defining-State-Machines.adoc#substates`](https://github.com/nasa/fpp/blob/main/docs/users-guide/Defining-State-Machines.adoc#substates) |
 | Hardware Manager SM (flat) | All hardware managers | [`fprime-sensors/ImuManager`](https://github.com/fprime-community/fprime-sensors/tree/devel/fprime-sensors/MpuImu/Components/ImuManager) |
-| Subtopologies | DataCollection, ScienceInference, ADCS, Comms, EPS + 4 pre-built | `docs/user-manual/design-patterns/subtopologies.md` |
+| Subtopologies | DataCollection, ScienceInference, ADCS, Comms, EPS (Layer 3) + CdhCore (Layer 5) + 3 pre-built Layer 3 | `docs/user-manual/design-patterns/subtopologies.md` |
 | Rate Groups | RateGroup1/2/3 | `docs/user-manual/design-patterns/rate-group.md` |
 | Health Checking | All application-level components | `docs/user-manual/design-patterns/health-checking.md` |
 | Callback Ports | Synchronized capture in DataCollectionApplication | `docs/user-manual/design-patterns/common-port-patterns.md` |

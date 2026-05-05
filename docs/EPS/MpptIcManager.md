@@ -4,7 +4,9 @@
 
 `MpptIcManager` is the Layer 2 Active component responsible for all communication with the BQ25756 MPPT and battery charging IC. No other component reads or writes the BQ25756 directly.
 
-On each rate group tick in `RUNNING` state, `MpptIcManager` triggers a one-shot ADC conversion, reads all relevant measurement and status registers over I2C (voltages, currents, charging status, fault flags), assembles the data into a state struct, and calls `EPSApplication`'s `batteryStateIn` port. When `EPSApplication` forwards a register-write command via the `setRegister` port, `MpptIcManager` writes the specified BQ25756 register over I2C and emits an event. When the BQ25756 INT interrupt fires, `MpptIcManager` reads the fault registers, emits a fault event, and reinitializes the IC.
+On each rate group tick in `RUNNING` state, `MpptIcManager` triggers a one-shot ADC conversion, reads all relevant measurement and status registers over I2C (voltages, currents, charging status, fault flags), assembles the data into a state struct, and calls `EPSApplication`'s `batteryStateIn` port. It also maintains a per-rail consecutive-fault counter: each tick where a rail voltage is out of range emits a `WARNING_HI` event; after N consecutive out-of-range readings on a rail, a `FATAL` event is emitted. The FATAL routes through `EventManager.FatalAnnounce → fatalHandler` in CdhCore.
+
+When `EPSApplication` forwards a register-write command via the `setRegister` port, `MpptIcManager` writes the specified BQ25756 register over I2C and emits an event. When the BQ25756 INT interrupt fires, `MpptIcManager` reads the fault registers, emits a fault event, and reinitializes the IC.
 
 ---
 
@@ -44,6 +46,7 @@ UNINITIALIZED
   └─ (entry) assert icReset GPIO high
              deassert icReset after reset delay
              read configuration registers; write any that differ from desired values
+             reset all per-rail fault counters to zero
              transition → RUNNING
              emit "transitioned to RUNNING" event
 
@@ -53,6 +56,14 @@ RUNNING
                        read configuration registers (vrechg, vbat_lowv, ichg)
                        read charging status register
                        read fault/flag registers
+                       for each monitored rail:
+                           if voltage out of range:
+                               increment rail fault counter
+                               emit WARNING_HI (rail ID, measured value)
+                               if fault counter >= FAULT_COUNT_THRESHOLD:
+                                   emit FATAL (rail ID)
+                           else:
+                               reset rail fault counter to zero
                        assemble batteryState struct
                        call batteryStateOut port
                        emit telemetry channels
@@ -71,6 +82,9 @@ Reference: [FPP substates](https://github.com/nasa/fpp/blob/main/docs/users-guid
 
 ## 5. Notes
 
+- `FAULT_COUNT_THRESHOLD` (N consecutive out-of-range readings before FATAL) is a hardcoded constant. Value TBD pending hardware characterization; should account for transient noise without masking real faults.
+- Per-rail fault counters reset to zero on each transition into `UNINITIALIZED` (i.e., on IC reset/reinitialization).
+- The FATAL event emitted after N consecutive bad readings routes through CdhCore: `EventManager.FatalAnnounce → fatalHandler`, which resets the system. The satellite reboots into Safe mode.
 - `batteryStateOut` port type is a custom struct. Consider splitting into a measurements port and a flags port if the struct becomes unwieldy; see `EPSApplication` notes for the matching `batteryStateIn` discussion.
 - Whether a formal state machine is strictly necessary is TBD; the key requirement is a post-reset initialization delay with register verification before processing requests.
 - INT interrupt port type depends on the LinuxGpioDriver version in use — exact port type to be confirmed during detailed design.
