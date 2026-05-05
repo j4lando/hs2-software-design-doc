@@ -219,9 +219,6 @@ Full CCSDS communications stack. Includes:
 Downlink path: `ComQueue → SpacePacketFramer → Aggregator → TmFramer → ComStub → Driver`
 Uplink path: `Driver → ComStub → FrameAccumulator → TcDeframer → SpacePacketDeframer → FprimeRouter`
 
-### ComFprime (`Svc/Subtopologies/ComFprime/`)
-F' native protocol communications stack (non-CCSDS).
-
 ### FileHandling (`Svc/Subtopologies/FileHandling/FileHandling.fpp`)
 File uplink, downlink, and management. Includes:
 - `fileUplink` (Svc.FileUplink)
@@ -302,7 +299,7 @@ Ports:
 - Group component instances + connections into a reusable block
 - Import with `import <Name>.Subtopology` in FPP topology
 - Override configuration by copying config files to your deployment directory
-- Available core subtopologies: CdhCore, ComCcsds, ComFprime, DataProducts, FileHandling
+- Available core subtopologies: CdhCore, ComCcsds, DataProducts, FileHandling
 
 ### Common Port Patterns
 **File:** `docs/user-manual/design-patterns/common-port-patterns.md`

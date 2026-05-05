@@ -27,7 +27,7 @@ All algorithms are included as external C++ libraries via CMake. Science results
 | IMU | SPI/I2C | AdcsApplication |
 | Sun Sensors | I2C/GPIO | AdcsApplication, SatStateMachine (sun/eclipse detection) |
 | Magnetorquers | GPIO/I2C | AdcsApplication |
-| EPS Board | I2C/UART | EpsManager, SatStateMachine |
+| EPS Board | I2C/UART | EPSApplication, MpptIcManager, SatStateMachine |
 | EnduroSat S-band Radio | UART | CommsApplication |
 | External Flash | SPI | FileHandling subtopology |
 | Temperature Sensors | I2C | ThermalManager |
@@ -66,7 +66,7 @@ Evaluated each 1 Hz tick by `SatStateMachine` in priority order. The highest-pri
 | 4 | **Eclipse** | Fallback — in eclipse, not Downlink, not Science |
 
 **Condition sources:**
-- Power OK → `EpsManager` (state of charge above `POWER_THRESHOLD` parameter)
+- Power OK → `EPSApplication` (state of charge above `POWER_THRESHOLD` parameter)
 - Over ground station → `GnssManager` (orbital position + ephemeris)
 - In sun / in eclipse → sun sensors AND `GnssManager` orbital position calculation
 - Downlink queue depth → `ComQueue` component
@@ -89,20 +89,21 @@ The flight software uses a **three-layer App-Manager-Driver architecture**. Comp
 ```
 Layer 3 — Application components (*Application)
     DataCollectionApplication | ScienceInferenceApplication
-    AdcsApplication | CommsApplication
-    + pre-built subtopologies: CdhCore | ComFprime | FileHandling | DataProducts
+    AdcsApplication | CommsApplication | EPSApplication
+    + pre-built subtopologies: CdhCore | ComCcsds | FileHandling | DataProducts
 
 Layer 2 — Hardware Managers (*Manager)
     Camera1Manager | Camera2Manager | StarTrackerManager | GnssManager
     ImuManager | SunSensorManager | MagnetorquerManager
-    EpsManager | ThermalManager | TemperatureSensorManager | HeaterManager
+    MpptIcManager | HardwareResetManager | WatchdogPinger | DeployPanelsManager
+    ThermalManager | TemperatureSensorManager | HeaterManager
     EnduroSatManager
 
 Layer 1 — F' Native Bus Drivers (*Driver)
     LinuxI2cDriver | LinuxSpiDriver | LinuxUartDriver | LinuxGpioDriver
 ```
 
-**Application components** (Layer 3) contain mission logic and receive mode-switch commands from `SatStateMachine`. Each has an internal hierarchical F' state machine (`Fw::Sm`) where mode is the top-level state and operational substates are nested inside. Application components dispatch work to hardware managers and never talk directly to drivers.
+**Application components** (Layer 3) contain mission logic and dispatch work to hardware managers, never talking directly to drivers. Most receive mode-switch commands from `SatStateMachine` and use a hierarchical F' state machine (`Fw::Sm`) where mode is the top-level state and operational substates are nested inside. `EPSApplication` is the exception — it has no mode port and no hierarchical SM, running continuously and responding only to rate group ticks and commands. See §9 for the standard pattern and §5.6 for the EPS exception.
 
 **Hardware managers** (Layer 2) are Active or Queued components with a single flat F' state machine following the startup→operational→recovery pattern: `RESET → WAIT_RESET → ENABLE → CONFIGURE → RUN`. They have no satellite mode awareness. Reference implementation: `fprime-community/fprime-sensors` `ImuManager`.
 
@@ -119,7 +120,7 @@ Layer 1 — F' Native Bus Drivers (*Driver)
 | Subtopology | Source | Purpose |
 |-------------|--------|---------|
 | `CdhCore` | `Svc/Subtopologies/CdhCore` | CmdDispatcher, EventManager, Health, Version, AssertFatalAdapter |
-| `ComFprime` | `Svc/Subtopologies/ComFprime` | F' native protocol framing, uplink/downlink pipeline |
+| `ComCcsds` | `Svc/Subtopologies/ComCcsds` | CCSDS communications stack; Space Packet and TM/TC frame framing, uplink/downlink pipeline |
 | `FileHandling` | `Svc/Subtopologies/FileHandling` | FileUplink, FileDownlink, FileManager, PrmDb |
 | `DataProducts` | `Svc/Subtopologies/DataProducts` | DpManager, DpWriter, DpCatalog for science results |
 
@@ -257,7 +258,7 @@ Top-level `switchMode: Adcs.Mode` signal inherited by all leaf states.
 | Component | Type | Purpose |
 |-----------|------|---------|
 | `CommsApplication` | Active | Hierarchical SM; receives mode from `SatStateMachine`; manages radio operating mode |
-| `EnduroSatManager` | Active (worker) | State machine: RESET → WAIT_RESET → ENABLE → CONFIGURE → RUN / error→RESET. Bridges ComFprime to the S-band radio. |
+| `EnduroSatManager` | Active (worker) | State machine: RESET → WAIT_RESET → ENABLE → CONFIGURE → RUN / error→RESET. Bridges ComCcsds to the S-band radio. |
 
 **CommsApplication modes (received via `Sat.CommsModePort`):**
 
@@ -268,18 +269,33 @@ Top-level `switchMode: Adcs.Mode` signal inherited by all leaf states.
 
 **Health monitoring:** `CommsApplication` is health-monitored. `EnduroSatManager` excluded.
 
-### 5.6 EPS and Thermal (Hardware Manager Only)
+### 5.6 EPS Subtopology
 
-These subsystems have no application-level component. Hardware managers run continuously independent of satellite mode.
+**Purpose:** Monitors battery and power system health, accepts power configuration and panel deployment commands from ground and `SatStateMachine`, and publishes power state to `SatStateMachine` for submode decisions. Runs continuously independent of satellite mode.
+
+**Components:**
 
 | Component | Type | Purpose |
 |-----------|------|---------|
-| `EpsManager` | Active (worker) | Monitors battery SoC; publishes power state to `SatStateMachine`; raises `WARNING_HI` at low threshold, `FATAL` at critical threshold |
+| `EPSApplication` | Active | Command-driven orchestrator; reads battery state from `MpptIcManager`; publishes `powerStateOut` to `SatStateMachine`; forwards charging, MPPT, and threshold commands to `MpptIcManager`; forwards deploy command to `DeployPanelsManager`. No mode interface. |
+| `MpptIcManager` | Active (worker) | Sole owner of BQ25756 IC over I2C; custom two-state SM: UNINITIALIZED → RUNNING; reads measurements each tick; handles fault recovery via INT interrupt |
+| `HardwareResetManager` | Active (worker) | Monitors current-sense signals on each tick; asserts reset GPIO on overcurrent detection; no state machine |
+| `WatchdogPinger` | Passive | Toggles hardware watchdog GPIO pin on each rate group tick |
+| `DeployPanelsManager` | Active | Executes burn wire deployment sequence on command; state machine: IDLE → DEPLOYING → DEPLOYED |
+
+`EPSApplication.powerStateOut` is consumed by `SatStateMachine` for submode activation decisions.
+
+**Health monitoring:** `EPSApplication` is health-monitored. Hardware managers excluded.
+
+### 5.7 Thermal (Hardware Manager Only)
+
+No application-level component. Hardware managers run continuously independent of satellite mode.
+
+| Component | Type | Purpose |
+|-----------|------|---------|
 | `ThermalManager` | Active | Polls temperature sensors; commands heater based on configurable thresholds; raises events on out-of-range readings |
 | `TemperatureSensorManager` | Queued (worker) | State machine: RESET → WAIT_RESET → ENABLE → CONFIGURE → RUN / error→RESET |
 | `HeaterManager` | Queued (worker) | State machine: RESET → WAIT_RESET → ENABLE → CONFIGURE → RUN / error→RESET |
-
-`EpsManager.powerStateOut` is consumed by `SatStateMachine` for submode activation decisions.
 
 ---
 
@@ -305,8 +321,8 @@ These subsystems have no application-level component. Hardware managers run cont
 
 | Rate Group | Frequency | Scheduled Components |
 |------------|-----------|---------------------|
-| `RateGroup1` | 10 Hz | `AdcsApplication`, `ImuManager`, `SunSensorManager`, `MagnetorquerManager`, watchdog stroke |
-| `RateGroup2` | 1 Hz | `SatStateMachine`, `EpsManager`, `ThermalManager`, `DataCollectionApplication` (availability check), `Health` |
+| `RateGroup1` | 10 Hz | `AdcsApplication`, `ImuManager`, `SunSensorManager`, `MagnetorquerManager`, `HardwareResetManager`, `WatchdogPinger` |
+| `RateGroup2` | 1 Hz | `SatStateMachine`, `EPSApplication`, `MpptIcManager`, `ThermalManager`, `DataCollectionApplication` (availability check), `Health` |
 | `RateGroup3` | 0.1 Hz | `StarTrackerManager`, `GnssManager`, `ScienceInferenceApplication`, `SystemResources`, `FileDownlink` |
 
 ---
@@ -334,7 +350,7 @@ Application components have no knowledge of `Sat::Mode` or `Sat::StandbySubmode`
 
 | Port | Source | Data |
 |------|--------|------|
-| `powerStateIn` | `EpsManager` | State of charge + above/below threshold |
+| `powerStateIn` | `EPSApplication` | State of charge + above/below threshold |
 | `sunEclipseIn` | Sun sensors + `GnssManager` | In sun / in eclipse |
 | `orbitStateIn` | `GnssManager` | Over ground station flag |
 | `downlinkQueueDepthIn` | `ComQueue` | Current queue depth (bytes) |
@@ -354,7 +370,7 @@ Application components have no knowledge of `Sat::Mode` or `Sat::StandbySubmode`
 | From | To | Trigger |
 |------|----|---------|
 | Safe | Standby | Ground command `SAFE_EXIT` (only after checkout completed) |
-| Any | Safe | Ground command `SAFE_MODE` or `EpsManager` `FATAL` event |
+| Any | Safe | Ground command `SAFE_MODE` or `EPSApplication` `FATAL` event |
 | Standby | submode | Condition evaluation each 1 Hz tick |
 
 **Events emitted:** mode and submode entry/exit events for every transition.
@@ -376,6 +392,8 @@ All application components use **hierarchical F' state machines** (`Fw::Sm`) whe
 Each parent state requires one `initial` specifier per FPP rules ([`#substates`](https://github.com/nasa/fpp/blob/main/docs/users-guide/Defining-State-Machines.adoc#substates)).
 
 **Idempotency:** Application components ignore mode-switch calls for the mode already active.
+
+**Exception:** `EPSApplication` does not follow this pattern. It has no mode port and no hierarchical SM. It operates continuously as a command-driven Active component with no satellite-mode-driven state transitions. See §5.6.
 
 ---
 
@@ -408,12 +426,12 @@ Reference: [`fprime-community/fprime-sensors/ImuManager`](https://github.com/fpr
 | `GnssManager` | `AdcsApplication` | Position + timing reference |
 | `GnssManager` | `SatStateMachine` | Orbital state (over ground station, sun/eclipse) |
 | `GnssManager` | Time services | PPS timing signal |
-| `EpsManager.powerStateOut` | `SatStateMachine` | Battery state of charge |
+| `EPSApplication.powerStateOut` | `SatStateMachine` | Battery state of charge |
 | `SatStateMachine.adcsModeOut` | `AdcsApplication` | Mode command (`Adcs.Mode`) |
 | `SatStateMachine.dataColModeOut` | `DataCollectionApplication` | Mode command (`DataCollection.Mode`) |
 | `SatStateMachine.scienceInferenceModeOut` | `ScienceInferenceApplication` | Mode command (`ScienceInference.Mode`) |
 | `SatStateMachine.commsModeOut` | `CommsApplication` | Mode command (`Comms.Mode`) |
-| `EnduroSatManager` | `ComFprime` | Uplink/downlink byte stream |
+| `EnduroSatManager` | `ComCcsds` | Uplink/downlink byte stream |
 | `DataCollection` | `DataProducts` | Science result data products |
 | `DataCollection` | `FileHandling` | Flagged image files |
 
@@ -428,7 +446,7 @@ Reference: [`fprime-community/fprime-sensors/ImuManager`](https://github.com/fpr
 | `ScienceInferenceApplication` | ScienceInference |
 | `AdcsApplication` | ADCS |
 | `CommsApplication` | Comms |
-| `EpsManager` | Top-level |
+| `EPSApplication` | EPS |
 | `ThermalManager` | Top-level |
 | `cmdDisp` | CdhCore |
 | `events` | CdhCore |
@@ -444,7 +462,7 @@ All hardware managers and workers excluded from health monitoring.
 | App-Manager-Driver | All subsystems | `docs/user-manual/design-patterns/app-man-drv.md` |
 | Hierarchical State Machine | All application components | [`nasa/fpp Defining-State-Machines.adoc#substates`](https://github.com/nasa/fpp/blob/main/docs/users-guide/Defining-State-Machines.adoc#substates) |
 | Hardware Manager SM (flat) | All hardware managers | [`fprime-sensors/ImuManager`](https://github.com/fprime-community/fprime-sensors/tree/devel/fprime-sensors/MpuImu/Components/ImuManager) |
-| Subtopologies | DataCollection, ScienceInference, ADCS, Comms + 4 pre-built | `docs/user-manual/design-patterns/subtopologies.md` |
+| Subtopologies | DataCollection, ScienceInference, ADCS, Comms, EPS + 4 pre-built | `docs/user-manual/design-patterns/subtopologies.md` |
 | Rate Groups | RateGroup1/2/3 | `docs/user-manual/design-patterns/rate-group.md` |
 | Health Checking | All application-level components | `docs/user-manual/design-patterns/health-checking.md` |
 | Callback Ports | Synchronized capture in DataCollectionApplication | `docs/user-manual/design-patterns/common-port-patterns.md` |

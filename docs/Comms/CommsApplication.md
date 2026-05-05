@@ -2,7 +2,7 @@
 
 ## 1. Overview
 
-`CommsApplication` is the Layer 3 Active component for the Comms subtopology. It manages the EnduroSat S-band radio operating mode — switching between low-rate omni telemetry (always available) and high-rate high-gain downlink (Standby/Downlink mode only). It coordinates `EnduroSatManager` (within its subtopology) and bridges to the `ComFprime` pre-built subtopology.
+`CommsApplication` is the Layer 3 Active component for the Comms subtopology. It manages the EnduroSat S-band radio operating mode — switching between low-rate omni telemetry (always available) and high-rate high-gain downlink (Standby/Downlink mode only). It coordinates `EnduroSatManager` (within its subtopology) and bridges to the `ComCcsds` pre-built subtopology.
 
 ---
 
@@ -79,5 +79,5 @@ Reference: [FPP inherited transitions](https://github.com/nasa/fpp/blob/main/doc
 ## 5. Notes
 
 - `HIGH_GAIN_DOWNLINK` requires `AdcsApplication` to be in `AntennaPointing` mode. `SatStateMachine` is responsible for commanding both simultaneously via the translation table — `CommsApplication` does not check ADCS state directly.
-- `EnduroSatManager` is instantiated at the top-level topology (shared with `ComFprime` subtopology); `CommsApplication` connects to it via the top-level topology wiring.
+- `EnduroSatManager` is instantiated at the top-level topology (shared with `ComCcsds` subtopology); `CommsApplication` connects to it via the top-level topology wiring.
 - Detailed high-gain link configuration and `EnduroSatManager` interface to be defined during detailed design.
