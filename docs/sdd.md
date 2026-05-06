@@ -334,10 +334,12 @@ Application components have no knowledge of `Sat::Mode` or `Sat::StandbySubmode`
 
 | Port | Source | Data |
 |------|--------|------|
-| `powerStateIn` | `EpsManager` | State of charge + above/below threshold |
-| `sunEclipseIn` | Sun sensors + `GnssManager` | In sun / in eclipse |
-| `orbitStateIn` | `GnssManager` | Over ground station flag |
-| `downlinkQueueDepthIn` | `ComQueue` | Current queue depth (bytes) |
+| `powerStateIn` | `EpsManager.powerStateOut` | State of charge + above/below threshold |
+| `sunEclipseIn` | `AdcsApplication` (telemetry-derived) | In sun / in eclipse |
+| `orbitStateIn` | `GnssManager.positionOut` | Over ground station flag (computed from position + ephemeris) |
+| `downlinkQueueDepthIn` | `ComFprime.ComQueue` | Current queue depth (bytes) |
+
+`sunEclipseIn` is **derived**, not a direct port from `SunSensorManager` to `SatStateMachine`. `SunSensorManager` publishes a body-frame sun vector with a validity flag to `AdcsApplication` only; `AdcsApplication` combines that flag with `GnssManager.positionOut` to determine whether the satellite is in sun or eclipse and surfaces the result to `SatStateMachine`. This keeps `SunSensorManager` ignorant of the satellite-mode logic and preserves the App-Manager-Driver layering (Layer 2 managers do not connect directly to `SatStateMachine`).
 
 ### Translation Table
 
