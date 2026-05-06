@@ -79,5 +79,5 @@ Reference: [FPP inherited transitions](https://github.com/nasa/fpp/blob/main/doc
 ## 5. Notes
 
 - `HIGH_GAIN_DOWNLINK` requires `AdcsApplication` to be in `AntennaPointing` mode. `SatStateMachine` is responsible for commanding both simultaneously via the translation table — `CommsApplication` does not check ADCS state directly.
-- `EnduroSatManager` is instantiated at the top-level topology (shared with `ComFprime` subtopology); `CommsApplication` connects to it via the top-level topology wiring.
+- `EnduroSatManager` is instantiated at the top-level topology (shared with `ComFprime` subtopology). The `radioCmd : Fw.Cmd` output is therefore a **cross-subtopology** connection wired in the top-level topology, not inside the Comms subtopology — the matching row appears in `sdd.md` §11.
 - Detailed high-gain link configuration and `EnduroSatManager` interface to be defined during detailed design.
