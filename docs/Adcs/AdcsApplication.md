@@ -37,15 +37,27 @@ Active component with internal hierarchical F' state machine (`Fw::Sm`).
 sync input port modeIn: Sat.AdcsModePort   # carries Adcs.Mode
 ```
 
-Mode enum (owned by this component's module):
+Mode enum and shared port types (owned by the `Adcs` module unless noted):
 
 ```fpp
 module Adcs {
     enum Mode { Off, Detumble, SunPointing, AntennaPointing, EarthLimbPointing, AttitudeHold }
+
+    # Sensor sample ports — published by the layer-2 managers, consumed here
+    port ImuDataPort(sample: ImuData)             # gyro + accel + timestamp; from ImuManager
+    port SunVectorPort(vector: SunVector)         # body-frame sun unit vector + validity + timestamp; from SunSensorManager
+    port AttitudePort(attitude: AttitudeQuat)     # quaternion + timestamp; from StarTrackerManager (top-level)
+
+    # Actuator command port — published here, consumed by MagnetorquerManager
+    port DipoleCmdPort(cmd: DipoleVector)         # X/Y/Z dipole moment in A·m² + timestamp
+}
+
+module Sat {
+    port PositionPort(state: OrbitalState)        # ECI position, velocity, time; from GnssManager (top-level)
 }
 ```
 
-If the incoming mode matches the current mode, the handler returns immediately (idempotent).
+The concrete data types (`ImuData`, `SunVector`, `AttitudeQuat`, `DipoleVector`, `OrbitalState`) are defined alongside their owning modules. If the incoming mode matches the current mode, the handler returns immediately (idempotent).
 
 ### 3.3 Ports
 
