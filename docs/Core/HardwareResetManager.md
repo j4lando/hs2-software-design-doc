@@ -24,7 +24,7 @@ Design deferred. Component is reserved for the Layer 5 / CdhCore integration wor
 |------|-----------|------|---------|
 | `hardwareFaultIn` | Input | Custom port (component/rail ID) | Called by FaultManager after threshold breach |
 | `faultNotifyOut` | Output | Custom port (component/rail ID) | Notifies `SatStateMachine` of the hardware fault |
-| `resetOut[N]` | Output | `Drv.GpioWrite` | One per monitored component; asserted to perform hardware reset |
+| `resetOut[N]` | Output | TBD pending hardware confirmation — port type is set when the component is implemented and can be updated in the FPP definition and topology wiring at that time | One per monitored component; asserted to perform hardware reset |
 | `logOut` | Output | `Fw.Log` | Event logging |
 
 ---
