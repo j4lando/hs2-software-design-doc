@@ -400,22 +400,36 @@ Reference: [`fprime-community/fprime-sensors/ImuManager`](https://github.com/fpr
 
 ## 11. Key Cross-Subtopology Wiring
 
-| Source | Destination | Data |
-|--------|-------------|------|
-| `StarTrackerManager` | `DataCollectionApplication` | Attitude reading (synchronized capture) |
-| `StarTrackerManager` | `AdcsApplication` | Attitude reading (precision pointing) |
-| `GnssManager` | `DataCollectionApplication` | Position + time (synchronized capture) |
-| `GnssManager` | `AdcsApplication` | Position + timing reference |
-| `GnssManager` | `SatStateMachine` | Orbital state (over ground station, sun/eclipse) |
-| `GnssManager` | Time services | PPS timing signal |
-| `EpsManager.powerStateOut` | `SatStateMachine` | Battery state of charge |
-| `SatStateMachine.adcsModeOut` | `AdcsApplication` | Mode command (`Adcs.Mode`) |
-| `SatStateMachine.dataColModeOut` | `DataCollectionApplication` | Mode command (`DataCollection.Mode`) |
-| `SatStateMachine.scienceInferenceModeOut` | `ScienceInferenceApplication` | Mode command (`ScienceInference.Mode`) |
-| `SatStateMachine.commsModeOut` | `CommsApplication` | Mode command (`Comms.Mode`) |
-| `EnduroSatManager` | `ComFprime` | Uplink/downlink byte stream |
-| `DataCollection` | `DataProducts` | Science result data products |
-| `DataCollection` | `FileHandling` | Flagged image files |
+Connections that cross subtopology boundaries — wired at the top-level topology — and the within-subtopology manager↔application connections that subordinate components depend on.
+
+| Source | Destination | Port type | Data |
+|--------|-------------|-----------|------|
+| `StarTrackerManager.attitudeOut` | `DataCollectionApplication.attitudeIn` | `Adcs.AttitudePort` | Attitude reading (synchronized capture) |
+| `StarTrackerManager.attitudeOut` | `AdcsApplication.attitudeIn` | `Adcs.AttitudePort` | Attitude reading (precision pointing) |
+| `GnssManager.positionOut` | `DataCollectionApplication.positionIn` | `Sat.PositionPort` | Position + time (synchronized capture) |
+| `GnssManager.positionOut` | `AdcsApplication.positionIn` | `Sat.PositionPort` | Position + timing reference |
+| `GnssManager.positionOut` | `SatStateMachine.orbitStateIn` | `Sat.PositionPort` | Orbital state (over ground station, sun/eclipse) |
+| `GnssManager` | Time services | PPS | PPS timing signal |
+| `EpsManager.powerStateOut` | `SatStateMachine.powerStateIn` | (Eps state) | Battery state of charge |
+| `SatStateMachine.adcsModeOut` | `AdcsApplication.modeIn` | `Sat.AdcsModePort` | Mode command (`Adcs.Mode`) |
+| `SatStateMachine.dataColModeOut` | `DataCollectionApplication.modeIn` | `Sat.DataColModePort` | Mode command (`DataCollection.Mode`) |
+| `SatStateMachine.scienceInferenceModeOut` | `ScienceInferenceApplication.modeIn` | `Sat.ScienceInferenceModePort` | Mode command (`ScienceInference.Mode`) |
+| `SatStateMachine.commsModeOut` | `CommsApplication.modeIn` | `Sat.CommsModePort` | Mode command (`Comms.Mode`) |
+| `CommsApplication.radioCmd` | `EnduroSatManager` | `Fw.Cmd` | Configure radio operating mode (Comms App lives in subtopology; manager lives top-level) |
+| `EnduroSatManager` ↔ `ComFprime` | byte stream | (radio bytes) | Uplink/downlink byte stream |
+| `DataCollectionApplication.imageWrite` | `DataProducts.DpManager` | `Fw.Dp` | Captured images + metadata |
+| `ScienceInferenceApplication.resultWrite` / `imageWrite` | `DataProducts.DpManager` | `Fw.Dp` | Algorithm outputs + compressed flagged images |
+| `DataCollectionApplication.storageQuery` | `FileHandling.FileManager` | `Fw.Cmd` | Storage availability check |
+| `ScienceInferenceApplication.storageQuery` | `FileHandling.FileManager` | `Fw.Cmd` | Unprocessed-image lookup |
+
+Within-subtopology connections that pair manager outputs with application inputs (instantiated inside their owning subtopology):
+
+| Source | Destination | Port type | Data |
+|--------|-------------|-----------|------|
+| `ImuManager.imuDataOut` | `AdcsApplication.imuDataIn` | `Adcs.ImuDataPort` | Angular rate + linear acceleration sample (10 Hz push) |
+| `SunSensorManager.sunVectorOut` | `AdcsApplication.sunVectorIn` | `Adcs.SunVectorPort` | Body-frame sun vector + validity flag (10 Hz push) |
+| `AdcsApplication.dipoleCmdOut` | `MagnetorquerManager.dipoleCmdIn` | `Adcs.DipoleCmdPort` | Target dipole vector (async) |
+| `Camera1Manager.imageOut` / `Camera2Manager.imageOut` | `DataCollectionApplication.imageIn[2]` | `Cam.ImagePort` | Captured image + metadata |
 
 ---
 
