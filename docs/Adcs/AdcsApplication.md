@@ -53,12 +53,13 @@ If the incoming mode matches the current mode, the handler returns immediately (
 |------|-----------|------|---------|
 | `modeIn` | Input | `Sat.AdcsModePort` | Mode command from SatStateMachine |
 | `schedIn` | Input | `Svc.Sched` | Rate group tick (10 Hz) |
-| `imuRequest` | Output | `Fw.Cmd` | Request IMU sample from ImuManager |
-| `sunSensorRequest` | Output | `Fw.Cmd` | Request sun sensor sample |
-| `magnetorquerCmd` | Output | `Fw.Cmd` | Actuator command to MagnetorquerManager |
-| `attitudeGet` | Output | `Fw.Dp` | Request attitude from StarTrackerManager |
-| `positionGet` | Output | `Fw.Dp` | Request position/timing from GnssManager |
+| `imuDataIn` | Input | `Adcs.ImuDataPort` | Angular rate + linear acceleration sample pushed by `ImuManager` each tick |
+| `sunVectorIn` | Input | `Adcs.SunVectorPort` | Body-frame sun unit vector + validity flag pushed by `SunSensorManager` each tick |
+| `attitudeIn` | Input | `Adcs.AttitudePort` | Attitude estimate pushed by `StarTrackerManager` (top-level) |
+| `positionIn` | Input | `Sat.PositionPort` | Position + timing pushed by `GnssManager` (top-level) |
+| `dipoleCmdOut` | Output | `Adcs.DipoleCmdPort` | Target dipole command to `MagnetorquerManager` |
 | `pingIn` / `pingOut` | In/Out | `Svc.Ping` | Health monitoring |
+| `prmGet` | Output | `Fw.PrmGet` | Load control-loop parameters from PrmDb |
 | `logOut` | Output | `Fw.Log` | Event logging |
 | `tlmOut` | Output | `Fw.Tlm` | Telemetry (attitude estimate, mode, error state) |
 
