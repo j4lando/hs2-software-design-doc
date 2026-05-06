@@ -58,10 +58,11 @@ If the incoming mode matches the current mode, the handler returns immediately (
 | `cameraPowerOn[2]` | Output | `Fw.Cmd` | Power on Camera1/Camera2Manager |
 | `cameraPowerOff[2]` | Output | `Fw.Cmd` | Power off Camera1/Camera2Manager |
 | `cameraCmd[2]` | Output | `Fw.Cmd` | Configure and capture commands to CameraManagers |
-| `attitudeGet` | Output | `Fw.Dp` | Request attitude snapshot from StarTrackerManager |
-| `positionGet` | Output | `Fw.Dp` | Request position snapshot from GnssManager |
+| `imageIn[2]` | Input | `Cam.ImagePort` | Captured image + metadata pushed by Camera1/Camera2Manager |
+| `attitudeIn` | Input | `Adcs.AttitudePort` | Attitude snapshot pushed by `StarTrackerManager` (top-level) |
+| `positionIn` | Input | `Sat.PositionPort` | Position + timing snapshot pushed by `GnssManager` (top-level) |
 | `storageQuery` | Output | `Fw.Cmd` | Query flash storage availability |
-| `imageWrite` | Output | `Fw.Dp` | Write captured image and metadata to flash |
+| `imageWrite` | Output | `Fw.Dp` | Write captured image and metadata to flash via `DataProducts` |
 | `pingIn` / `pingOut` | In/Out | `Svc.Ping` | Health monitoring |
 | `prmGet` | Output | `Fw.PrmGet` | Load experiment parameters from PrmDb |
 | `logOut` | Output | `Fw.Log` | Event logging |
