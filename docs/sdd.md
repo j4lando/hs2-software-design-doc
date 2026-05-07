@@ -156,8 +156,8 @@ Layer 1 — F' Native Bus Drivers (*Driver)
 | Component | Type | Purpose |
 |-----------|------|---------|
 | `DataCollectionApplication` | Active (high priority) | Hierarchical SM; receives mode from `SatStateMachine`; orchestrates experiment execution |
-| `Camera1Manager` | Active (worker) | State machine: RESET → WAIT_RESET → ENABLE → CONFIGURE → RUN / error→RESET |
-| `Camera2Manager` | Active (worker) | State machine: RESET → WAIT_RESET → ENABLE → CONFIGURE → RUN / error→RESET |
+| `Camera1Manager` | Active (worker) | State machine: OFF → RESET → WAIT_RESET → ENABLE → CONFIGURE → RUN / error→RESET; powered on/off by DataCollectionApplication |
+| `Camera2Manager` | Active (worker) | State machine: OFF → RESET → WAIT_RESET → ENABLE → CONFIGURE → RUN / error→RESET; powered on/off by DataCollectionApplication |
 
 **DataCollectionApplication modes (received via `Sat.DataColModePort`):**
 
@@ -182,7 +182,9 @@ RUN_EXPERIMENT
 
 Top-level `switchMode` signal inherited by all leaf states — mode switch valid from any substate.
 
-**Synchronized capture requirement:** Within `CAPTURING`, `DataCollectionApplication` simultaneously requests images from Camera1Manager and Camera2Manager, attitude from `StarTrackerManager`, and position from `GnssManager`. All four must be acquired within a 10ms window before dispatching to `ScienceInferenceApplication`.
+**Synchronized capture requirement:** Within `CAPTURING`, `DataCollectionApplication` simultaneously requests images from Camera1Manager and Camera2Manager, attitude from `StarTrackerManager`, and position from `GnssManager`. All four must be acquired within a 10ms window before dispatching to `ScienceInferenceApplication`. Image frames arrive via `imageIn[2]: Cam.ImagePort` push ports on `DataCollectionApplication`; frames are matched to the triggering capture by `seqId`.
+
+**`Cam.ImagePort`** is a typed port defined in the `DataCollection` module, carrying: raw frame buffer, `expId: U8`, `seqId: U32`, hardware-latched timestamp, and capture status. It is shared between `DataCollectionApplication` (`imageIn[2]`), `Camera1Manager` (`imageOut`), and `Camera2Manager` (`imageOut`).
 
 **Ports consumed from outside subtopology:**
 - `StarTrackerManager` attitude port (top-level)
@@ -345,7 +347,7 @@ No application-level component. Hardware managers run continuously independent o
 | Rate Group | Frequency | Scheduled Components |
 |------------|-----------|---------------------|
 | `RateGroup1` | 10 Hz | `AdcsApplication`, `ImuManager`, `SunSensorManager`, `MagnetorquerManager`, `WatchdogPinger` |
-| `RateGroup2` | 1 Hz | `SatStateMachine`, `EPSApplication`, `MpptIcManager`, `ThermalManager`, `DataCollectionApplication` (availability check), `Health` |
+| `RateGroup2` | 1 Hz | `SatStateMachine`, `EPSApplication`, `MpptIcManager`, `ThermalManager`, `DataCollectionApplication` (availability check), `Camera1Manager`, `Camera2Manager`, `Health` |
 | `RateGroup3` | 0.1 Hz | `StarTrackerManager`, `GnssManager`, `ScienceInferenceApplication`, `SystemResources`, `FileDownlink` |
 
 ---

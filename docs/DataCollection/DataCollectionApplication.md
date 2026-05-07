@@ -58,6 +58,7 @@ If the incoming mode matches the current mode, the handler returns immediately (
 | `cameraPowerOn[2]` | Output | `Fw.Cmd` | Power on Camera1/Camera2Manager |
 | `cameraPowerOff[2]` | Output | `Fw.Cmd` | Power off Camera1/Camera2Manager |
 | `cameraCmd[2]` | Output | `Fw.Cmd` | Configure and capture commands to CameraManagers |
+| `imageIn[2]` | Input | `Cam.ImagePort` | Receive captured frame + timestamp from Camera1/Camera2Manager |
 | `attitudeGet` | Output | `Fw.Dp` | Request attitude snapshot from StarTrackerManager |
 | `positionGet` | Output | `Fw.Dp` | Request position snapshot from GnssManager |
 | `storageQuery` | Output | `Fw.Cmd` | Query flash storage availability |
