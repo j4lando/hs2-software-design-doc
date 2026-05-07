@@ -2,11 +2,11 @@
 
 ## 1. Overview
 
-`MagnetorquerManager` is the Layer 2 hardware manager for the magnetorquer coils within the ADCS subtopology. It is an **actuator manager** — it receives a magnetic moment vector from `AdcsApplication`, converts it to per-axis PWM duty cycles, and drives the H-bridge current driver via GPIO.
+`MagnetorquerManager` is the Layer 2 hardware manager for the magnetorquer coils within the ADCS subtopology. It is an **actuator manager** — it receives a magnetic moment vector from `AdcsApplication`, converts it to per-axis PWM duty cycles, and drives the H-bridge current driver via six PWM signals (two per axis: one signal per current direction).
 
 `MagnetorquerManager` is a **Queued** component driven by `RateGroup1` (10 Hz). It has no satellite mode awareness and performs no control law computation. On receiving a moment vector, it computes the corresponding duty cycles and applies them as a burst over N ticks; after the burst completes it idles (zero current on all axes) until the next moment vector arrives. This burst-then-idle pattern allows the magnetometer to read an uncontaminated B-field between actuation pulses.
 
-All bus access goes through the Layer 1 `LinuxGpioDriver`.
+Each H-bridge axis requires two PWM inputs for bidirectional current control: driving the positive-direction channel to the desired duty cycle while holding the negative-direction channel at zero produces current in one direction; swapping which channel is non-zero reverses the current. No GPIO pins are required. All bus access goes through six `LinuxPwmDriver` instances (one per PWM channel).
 
 ---
 
@@ -16,7 +16,7 @@ All bus access goes through the Layer 1 `LinuxGpioDriver`.
 |----|-------------|--------------|
 | HS2-MTQ-001 | MagnetorquerManager shall reset the coil driver to a known safe state (zero current on all axes) before any configuration is applied | Inspection |
 | HS2-MTQ-002 | MagnetorquerManager shall wait for the driver reset stabilization period before proceeding to enable | Inspection |
-| HS2-MTQ-003 | MagnetorquerManager shall enable the H-bridge driver for all three coil axes before entering the run loop | Inspection |
+| HS2-MTQ-003 | MagnetorquerManager shall set the PWM period and enable all six PWM channels before entering the run loop | Inspection |
 | HS2-MTQ-004 | MagnetorquerManager shall configure PWM frequency from F' parameters before entering the run loop | Inspection |
 | HS2-MTQ-005 | MagnetorquerManager shall zero all coil currents on entry to RESET | Inspection |
 | HS2-MTQ-006 | MagnetorquerManager shall accept a magnetic moment vector from AdcsApplication via a sync input port while in RUN | Inspection |
@@ -55,7 +55,9 @@ Queued component with internal flat F' state machine (`Fw::Sm`). Has a message q
 | `schedIn` | Input | `Svc.Sched` | 10 Hz rate group tick — drives SM step and burst countdown |
 | `momentVectorIn` | Input (sync) | `Adcs.MomentVectorPort` | Magnetic moment vector from AdcsApplication; converted to duty cycles |
 | `controlIn` | Input (async) | `Adcs.ManagerControlPort` | ON/OFF command from AdcsApplication |
-| `busWrite` | Output | `Drv.GpioWrite` | PWM duty cycle signals to H-bridge driver |
+| `pwmSetPeriodOut[6]` | Output | `Drv.PwmSetPeriod` | Set PWM period on all six channels during CONFIGURE |
+| `pwmSetDutyCycleOut[6]` | Output | `Drv.PwmSetDutyCycle` | Duty cycle control — channels 0–1: X-axis (±), 2–3: Y-axis (±), 4–5: Z-axis (±) |
+| `pwmEnableOut[6]` | Output | `Drv.PwmEnable` | Enable all six channels on CONFIGURE entry; disable on error before → RESET |
 | `prmGet` | Output | `Fw.PrmGet` | Load parameters from PrmDb during CONFIGURE |
 | `logOut` | Output | `Fw.Log` | Event logging (state transitions, errors) |
 | `tlmOut` | Output | `Fw.Tlm` | Telemetry (SM state, applied duty cycles per axis, consecutive failure count) |
@@ -72,13 +74,13 @@ Queued component with internal flat F' state machine (`Fw::Sm`). Has a message q
 
 ```
 OFF
-  entry: write zero current to all three coil axes
+  entry: call pwmSetDutyCycleOut(0) on all six channels
          [further shutdown protocol TBD]
   on tick: no action
   on controlIn(ON) → RESET
 
 RESET
-  entry: write zero current to all three coil axes
+  entry: call pwmSetDutyCycleOut(0) on all six channels
          reset consecutive-failure counter
          reset wait-tick counter
          reset burst tick counter
@@ -86,34 +88,32 @@ RESET
 
 WAIT_RESET
   on tick: increment wait-tick counter
-           if counter >= RESET_WAIT_TICKS → ENABLE
+           if counter >= RESET_WAIT_TICKS → CONFIGURE
            (no bus operations)
 
-ENABLE
-  entry: write enable command to H-bridge (enable all axes, set PWM frequency)
-  on tick:
-    if busWrite OK → CONFIGURE
-    if busWrite error → log WARNING_HI, increment failure count → RESET
-
 CONFIGURE
-  entry: zero coil currents
+  entry: call pwmSetDutyCycleOut(0) on all six channels
          load PWM_FREQUENCY, BURST_TICKS from PrmDb
-         write PWM frequency configuration to driver
+         call pwmSetPeriodOut(periodNs) on all six channels
+         call pwmEnableOut(HIGH) on all six channels
   on tick:
     if all writes OK → RUN
-    if any write error → log WARNING_HI, increment failure count → RESET
+    if any write error → log WARNING_HI, increment failure count,
+                         call pwmEnableOut(LOW) on all six channels → RESET
 
 RUN
   on momentVectorIn: compute per-axis PWM duty cycles from moment vector
                      set burst counter to BURST_TICKS
   on tick: if burst counter > 0:
-             write duty cycles to H-bridge (all three axes)
+             for each axis, write computed duty cycle to the positive-direction
+             channel and zero to the negative-direction channel (or vice versa
+             for negative moment); zero both channels if moment component is zero
              decrement burst counter
              emit applied duty cycles as telemetry
              reset consecutive-failure counter on success
            if burst counter == 0:
-             write zero to all axes (coils idle)
-           on busWrite error:
+             call pwmSetDutyCycleOut(0) on all six channels (coils idle)
+           on any write error:
              log WARNING_HI (throttled), increment failure count → RESET
 
 # Global signals — reachable from any state:
@@ -125,7 +125,7 @@ on reconfigure signal → CONFIGURE
 
 **Burst-then-idle:** After each moment vector is received, duty cycles are applied for exactly `BURST_TICKS` ticks. The coils then idle at zero current until the next `momentVectorIn`. This ensures the magnetometer can sample an uncontaminated B-field between actuation pulses.
 
-**Safe zero-current on RESET and OFF:** Every entry to `RESET` or `OFF` immediately zeroes all coil axes before doing anything else.
+**Safe zero-current on RESET and OFF:** Every entry to `RESET` or `OFF` immediately calls `pwmSetDutyCycleOut(0)` on all six channels before doing anything else.
 
 **Error self-healing:** Any bus write failure emits a throttled `WARNING_HI` event, increments `consecutiveFailures`, zeroes coil currents, and re-enters `RESET`.
 
@@ -139,7 +139,7 @@ Reference: [`fprime-community/fprime-sensors/ImuManager`](https://github.com/fpr
 
 ## 5. Notes
 
-- `MagnetorquerManager` is instantiated inside the ADCS subtopology. Its `busWrite` port connects to a `LinuxGpioDriver` instance at the top-level topology.
+- `MagnetorquerManager` is instantiated inside the ADCS subtopology. Its `pwmSetDutyCycleOut[6]`, `pwmSetPeriodOut[6]`, and `pwmEnableOut[6]` port arrays connect to six `LinuxPwmDriver` instances at the top-level topology.
 - `momentVectorIn` is connected from `AdcsApplication` within the ADCS subtopology.
 - `MagnetorquerManager` is **excluded from health monitoring** (`Svc::Health`). Only `AdcsApplication` is health-checked.
 - Moment-vector to duty-cycle conversion (mapping A·m² to PWM duty cycle percentage) is an implementation detail for the component's C++ source.

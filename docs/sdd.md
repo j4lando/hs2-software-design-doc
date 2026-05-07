@@ -26,7 +26,7 @@ All algorithms are included as external C++ libraries via CMake. Science results
 | aGNSS Receiver | UART | DataCollectionApplication (synchronized capture), AdcsApplication (position/timing), SatStateMachine (orbital state) |
 | IMU | SPI/I2C | AdcsApplication |
 | Sun Sensors | I2C/GPIO | AdcsApplication, SatStateMachine (sun/eclipse detection) |
-| Magnetorquers | GPIO/I2C | AdcsApplication |
+| Magnetorquers | PWM | AdcsApplication |
 | EPS Board | I2C/UART | EPSApplication, MpptIcManager, SatStateMachine |
 | EnduroSat S-band Radio | UART | CommsApplication |
 | External Flash | SPI | FileHandling subtopology |
@@ -231,7 +231,7 @@ Top-level `switchMode` signal inherited by all leaf states — mode switch valid
 | `AdcsApplication` | Active (high priority) | Hierarchical SM; receives mode from `SatStateMachine`; runs attitude control loop |
 | `ImuManager` | Queued (worker) | State machine: RESET → WAIT_RESET → ENABLE → CONFIGURE → RUN / error→RESET |
 | `SunSensorManager` | Queued (worker) | State machine: RESET → WAIT_RESET → ENABLE → CONFIGURE → RUN / error→RESET |
-| `MagnetorquerManager` | Queued (worker) | State machine: RESET → WAIT_RESET → ENABLE → CONFIGURE → RUN / error→RESET |
+| `MagnetorquerManager` | Queued (worker) | State machine: RESET → WAIT_RESET → CONFIGURE → RUN / error→RESET; drives six `LinuxPwmDriver` channels (two per axis) |
 
 **AdcsApplication modes (received via `Sat.AdcsModePort`):**
 
@@ -334,7 +334,7 @@ Top-level `switchMode: Adcs.Mode` signal inherited by all leaf states.
 | `LinuxI2cDriver` (×N) | 1 | Passive | One instance per I2C bus |
 | `LinuxSpiDriver` (×N) | 1 | Passive | One instance per SPI bus |
 | `LinuxUartDriver` (×N) | 1 | Passive | One instance per UART (star tracker, GNSS, radio) |
-| `LinuxGpioDriver` (×N) | 1 | Passive | One instance per GPIO group (magnetorquers, heater) |
+| `LinuxGpioDriver` (×N) | 1 | Passive | One instance per GPIO group (watchdog, deploy panels) |
 
 ---
 
