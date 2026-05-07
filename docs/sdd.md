@@ -30,8 +30,8 @@ All algorithms are included as external C++ libraries via CMake. Science results
 | EPS Board | I2C/UART | EPSApplication, MpptIcManager, SatStateMachine |
 | EnduroSat S-band Radio | UART | CommsApplication |
 | External Flash | SPI | FileHandling subtopology |
-| Temperature Sensors | I2C | ThermalManager |
-| Heater | GPIO | ThermalManager |
+| Temperature Sensors | I2C | ThermalApplication (via TemperatureSensorManager) |
+| Heater | PWM | ThermalApplication (via HeaterManager) |
 
 ---
 
@@ -96,14 +96,14 @@ Layer 4 — Mission Orchestration
 
 Layer 3 — Application components (*Application)
     DataCollectionApplication | ScienceInferenceApplication
-    AdcsApplication | CommsApplication | EPSApplication
+    AdcsApplication | CommsApplication | EPSApplication | ThermalApplication
     + pre-built subtopologies: ComCcsds | FileHandling | DataProducts
 
 Layer 2 — Hardware Managers (*Manager)
     Camera1Manager | Camera2Manager | StarTrackerManager | GnssManager
     ImuManager | SunSensorManager | MagnetorquerManager
     MpptIcManager | WatchdogPinger | DeployPanelsManager
-    ThermalManager | TemperatureSensorManager | HeaterManager
+    TemperatureSensorManager | HeaterManager
     EnduroSatManager
 
 Layer 1 — F' Native Bus Drivers (*Driver)
@@ -309,15 +309,13 @@ Top-level `switchMode: Adcs.Mode` signal inherited by all leaf states.
 
 **Health monitoring:** `EPSApplication` is health-monitored. Hardware managers excluded.
 
-### 5.8 Thermal (Hardware Manager Only)
-
-No application-level component. Hardware managers run continuously independent of satellite mode.
+### 5.8 Thermal Subtopology
 
 | Component | Type | Purpose |
 |-----------|------|---------|
-| `ThermalManager` | Active | Polls temperature sensors; commands heater based on configurable thresholds; raises events on out-of-range readings |
-| `TemperatureSensorManager` | Queued (worker) | State machine: RESET → WAIT_RESET → ENABLE → CONFIGURE → RUN / error→RESET |
-| `HeaterManager` | Queued (worker) | State machine: RESET → WAIT_RESET → ENABLE → CONFIGURE → RUN / error→RESET |
+| `ThermalApplication` | Active | Hierarchical SM (NoHeating / ActiveHeating); receives mode from `SatStateMachine`; reads all temperature sensor data each tick; runs PID control loop in ActiveHeating; commands duty cycle to `HeaterManager` |
+| `TemperatureSensorManager` | Queued (worker) | State machine: RESET → WAIT_RESET → ENABLE → CONFIGURE → RUN / error→RESET; owns all temperature sensors via `LinuxI2cDriver` |
+| `HeaterManager` | Queued (worker) | State machine: RESET → CONFIGURE → RUN / error→RESET; owns the PWM heater channel via `LinuxPwmDriver` |
 
 ---
 
@@ -345,7 +343,7 @@ No application-level component. Hardware managers run continuously independent o
 | Rate Group | Frequency | Scheduled Components |
 |------------|-----------|---------------------|
 | `RateGroup1` | 10 Hz | `AdcsApplication`, `ImuManager`, `SunSensorManager`, `MagnetorquerManager`, `WatchdogPinger` |
-| `RateGroup2` | 1 Hz | `SatStateMachine`, `EPSApplication`, `MpptIcManager`, `ThermalManager`, `DataCollectionApplication` (availability check), `Health` |
+| `RateGroup2` | 1 Hz | `SatStateMachine`, `EPSApplication`, `MpptIcManager`, `ThermalApplication`, `TemperatureSensorManager`, `HeaterManager`, `DataCollectionApplication` (availability check), `Health` |
 | `RateGroup3` | 0.1 Hz | `StarTrackerManager`, `GnssManager`, `ScienceInferenceApplication`, `SystemResources`, `FileDownlink` |
 
 ---
@@ -470,7 +468,7 @@ Reference: [`fprime-community/fprime-sensors/ImuManager`](https://github.com/fpr
 | `AdcsApplication` | ADCS |
 | `CommsApplication` | Comms |
 | `EPSApplication` | EPS |
-| `ThermalManager` | Top-level |
+| `ThermalApplication` | Thermal |
 | `cmdDisp` | CdhCore |
 | `events` | CdhCore |
 
