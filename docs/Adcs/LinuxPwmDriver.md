@@ -2,7 +2,7 @@
 
 ## 1. Overview
 
-`LinuxPwmDriver` is a Layer 1 **Passive** bus driver for a single Linux hardware PWM channel. It provides a typed F' port interface over the Linux sysfs PWM subsystem (`/sys/class/pwm/`), allowing `MagnetorquerManager` to set the period, duty cycle, and enable state of a hardware PWM output without any direct kernel interaction.
+`LinuxPwmDriver` is a Layer 1 **Passive** bus driver for a single Linux hardware PWM channel. It provides a typed F' port interface over the Linux sysfs PWM subsystem (`/sys/class/pwm/`), allowing higher-level components to set the period, duty cycle, and enable state of a hardware PWM output without any direct kernel interaction. Current consumers include both `MagnetorquerManager` and `HeaterManager`.
 
 `LinuxPwmDriver` is responsible only for period, duty cycle, and channel enable.
 
