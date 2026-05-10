@@ -2,6 +2,8 @@
 
 ## 1. Overview
 
+This is the top-level software design document for all of the separate pieces of the ADCS subsystem's FPrime code.
+
 The ADCS Subsystem implements multiple FPrime Components to manage its hardware and to run its attitude determination and control algorithms. This document provides a general overview of those components for quick reference.
 
 ---
@@ -42,15 +44,17 @@ ADCS-005|The ADCS shall make sure the cameras are pointed at least 55 degrees aw
 
 Under normal operation, CDH should only interface with the `StateEstimator` and `AttitudeController` components. `StateEstimator` pulls information from ADCS sensors and from non-ADCS truth measures, and then provides a current estimate of state. `AttitudeController` controls the orientation of the satellite based on commands from CDH and state estimates from `StateEstimator`. These components have their own state machines which are independent of each other.
 
+See component- and port-specific documentation for details.
+
 ### 3.3 Common Ports
 
 All ADCS FPrime Components implement the following ports:
 
-|Port|Direction|Type|Purpose|
-|-|-|-|-|
-`timeCaller`|`time get`|-|Port for requesting the current time
-`prmGetOut`|`param get`|-|Port to return the value of a parameter
-`prmSetOut`|`param set`|-|Port to set the value of a parameter
+|Port|Type|Purpose|
+|-|-|-|
+`timeCaller`|`time get`|Port for requesting the current time
+`prmGetOut`|`param get`|Port to return the value of a parameter
+`prmSetOut`|`param set`|Port to set the value of a parameter
 
 Additionally, All queued components implement the following ports:
 
