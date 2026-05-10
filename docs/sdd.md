@@ -300,12 +300,12 @@ Top-level `switchMode: Adcs.Mode` signal inherited by all leaf states.
 
 | Component | Type | Purpose |
 |-----------|------|---------|
-| `EPSApplication` | Active | Command-driven orchestrator; reads battery state from `MpptIcManager`; publishes `powerStateOut` to `SatStateMachine`; forwards `SET_IC_REGISTER` commands to `MpptIcManager` via `setRegister` port; forwards deploy command to `DeployPanelsManager`. No mode interface. |
+| `EPSApplication` | Active | Command-driven orchestrator; reads battery state from `MpptIcManager`; exposes `powerStateGet` synchronous get port read by `SatStateMachine`; forwards `SET_IC_REGISTER` commands to `MpptIcManager` via `setRegister` port; forwards deploy command to `DeployPanelsManager`. No mode interface. |
 | `MpptIcManager` | Active (worker) | Sole owner of BQ25756 IC over I2C; custom two-state SM: UNINITIALIZED → RUNNING; reads measurements each tick; handles IC fault recovery via INT interrupt |
 | `WatchdogPinger` | Passive | Toggles hardware watchdog GPIO pin on each rate group tick |
 | `DeployPanelsManager` | Active | Two-state SM: NOT_DEPLOYED → DEPLOYED; executes burn wire sequence in both states; emits WARNING_HI on re-attempt in DEPLOYED state |
 
-`EPSApplication.powerStateOut` is consumed by `SatStateMachine` for submode activation decisions.
+`SatStateMachine` retrieves the latest power state from `EPSApplication` each 1 Hz tick by invoking the `powerStateGet` synchronous get port; the returned struct drives submode activation decisions.
 
 **Health monitoring:** `EPSApplication` is health-monitored. Hardware managers excluded.
 
@@ -369,12 +369,12 @@ Application components have no knowledge of `Sat::Mode` or `Sat::StandbySubmode`
 
 ### Condition Inputs
 
-| Port | Source | Data |
-|------|--------|------|
-| `powerStateIn` | `EPSApplication` | State of charge + above/below threshold |
-| `sunEclipseIn` | Sun sensors + `GnssManager` | In sun / in eclipse |
-| `orbitStateIn` | `GnssManager` | Over ground station flag |
-| `downlinkQueueDepthIn` | `ComQueue` | Current queue depth (bytes) |
+| Port | Direction | Source | Data |
+|------|-----------|--------|------|
+| `powerStateGet` | Output (sync get into `EPSApplication`) | `EPSApplication` | State of charge + above/below threshold (returned struct) |
+| `sunEclipseIn` | Input | Sun sensors + `GnssManager` | In sun / in eclipse |
+| `orbitStateIn` | Input | `GnssManager` | Over ground station flag |
+| `downlinkQueueDepthIn` | Input | `ComQueue` | Current queue depth (bytes) |
 
 ### Translation Table
 
@@ -447,7 +447,7 @@ Reference: [`fprime-community/fprime-sensors/ImuManager`](https://github.com/fpr
 | `GnssManager` | `AdcsApplication` | Position + timing reference |
 | `GnssManager` | `SatStateMachine` | Orbital state (over ground station, sun/eclipse) |
 | `GnssManager` | Time services | PPS timing signal |
-| `EPSApplication.powerStateOut` | `SatStateMachine` | Battery state of charge |
+| `EPSApplication.powerStateGet` (sync get) | `SatStateMachine` | Battery state of charge (pulled by `SatStateMachine` each 1 Hz tick) |
 | `SatStateMachine.adcsModeOut` | `AdcsApplication` | Mode command (`Adcs.Mode`) |
 | `SatStateMachine.dataColModeOut` | `DataCollectionApplication` | Mode command (`DataCollection.Mode`) |
 | `SatStateMachine.scienceInferenceModeOut` | `ScienceInferenceApplication` | Mode command (`ScienceInference.Mode`) |
