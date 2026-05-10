@@ -1,4 +1,4 @@
-# AdcsApplication SDD
+# Top-Level ADCS SDD
 
 ## 1. Overview
 
