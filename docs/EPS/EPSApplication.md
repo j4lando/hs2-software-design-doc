@@ -10,7 +10,14 @@ Unlike other Layer 3 components, `EPSApplication` has no mode interface — it o
 
 ## 2. Requirements
 
-TODO
+| ID | Requirement | Verification |
+|----|-------------|--------------|
+| HS2-EPS-001 | EPSApplication shall publish powerState to SatStateMachine on each rate group tick. | Inspection |
+| HS2-EPS-002 | EPSApplication shall emit a WARNING_HI event when vbatt falls below POWER_THRESHOLD or CRITICAL_THRESHOLD. | Inspection |
+| HS2-EPS-003 | EPSApplication shall forward SET_IC_REGISTER commands to MpptIcManager without refusal logic. | Inspection |
+| HS2-EPS-004 | EPSApplication shall forward DEPLOY_PANELS commands to DeployPanelsManager without refusal logic. | Inspection |
+| HS2-EPS-005 | EPSApplication shall operate continuously regardless of satellite mode. | Inspection |
+| HS2-EPS-006 | EPSApplication shall respond to health ping within the required deadline. | Inspection |
 
 ---
 
@@ -55,8 +62,8 @@ Active component. No hierarchical state machine — `EPSApplication` operates co
 schedIn fires (1 Hz)
   → read latest batteryState from MpptIcManager
   → check vbatt against POWER_THRESHOLD parameter
-      if below WARNING threshold → log WARNING_HI
-      if below CRITICAL threshold → log FATAL
+      if below WARNING threshold → log WARNING_HI (LOW_BATTERY)
+      if below CRITICAL threshold → log WARNING_HI (CRITICAL_BATTERY)
   → assemble powerState struct
   → call powerStateOut to SatStateMachine
   → emit telemetry channels

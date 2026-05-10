@@ -46,7 +46,7 @@ The satellite operates in two main modes managed by `SatStateMachine`. Uplink co
 
 ### Safe Mode
 
-The satellite enters Safe mode on: deploy/reboot, EPS `FATAL` low-power event, or ground command `SAFE_MODE`. Exits to Standby on ground command `SAFE_EXIT` (only after checkout has been completed).
+The satellite enters Safe mode on: deploy/reboot, critical battery condition reported by `EPSApplication` via `powerState` (vbatt below `CRITICAL_THRESHOLD`), or ground command `SAFE_MODE`. Exits to Standby on ground command `SAFE_EXIT` (only after checkout has been completed).
 
 `AdcsApplication` runs detumble (magnetometer B-dot algorithm) when power allows. All other application components are inactive.
 
@@ -301,7 +301,7 @@ Top-level `switchMode: Adcs.Mode` signal inherited by all leaf states.
 | Component | Type | Purpose |
 |-----------|------|---------|
 | `EPSApplication` | Active | Command-driven orchestrator; reads battery state from `MpptIcManager`; publishes `powerStateOut` to `SatStateMachine`; forwards `SET_IC_REGISTER` commands to `MpptIcManager` via `setRegister` port; forwards deploy command to `DeployPanelsManager`. No mode interface. |
-| `MpptIcManager` | Active (worker) | Sole owner of BQ25756 IC over I2C; custom two-state SM: UNINITIALIZED → RUNNING; reads measurements each tick; per-rail consecutive-fault counter emits WARNING_HI each bad reading and FATAL after N consecutive bad readings; handles IC fault recovery via INT interrupt |
+| `MpptIcManager` | Active (worker) | Sole owner of BQ25756 IC over I2C; custom two-state SM: UNINITIALIZED → RUNNING; reads measurements each tick; handles IC fault recovery via INT interrupt |
 | `WatchdogPinger` | Passive | Toggles hardware watchdog GPIO pin on each rate group tick |
 | `DeployPanelsManager` | Active | Two-state SM: NOT_DEPLOYED → DEPLOYED; executes burn wire sequence in both states; emits WARNING_HI on re-attempt in DEPLOYED state |
 
@@ -391,7 +391,7 @@ Application components have no knowledge of `Sat::Mode` or `Sat::StandbySubmode`
 | From | To | Trigger |
 |------|----|---------|
 | Safe | Standby | Ground command `SAFE_EXIT` (only after checkout completed) |
-| Any | Safe | Ground command `SAFE_MODE`; `EPSApplication` `FATAL` event (critical battery); or `MpptIcManager` `FATAL` event (N consecutive bad rail voltage readings) — all FATAL events route through `EventManager.FatalAnnounce → fatalHandler`; system reboots into Safe mode |
+| Any | Safe | Ground command `SAFE_MODE`; vbatt below `CRITICAL_THRESHOLD` in `powerState` from `EPSApplication` evaluated by `SatStateMachine` each 1 Hz tick. `EPSApplication` does not emit `FATAL`; the transition is a normal `SatStateMachine` mode change, not a `fatalHandler` reboot. Any `FATAL` from elsewhere (e.g. `AssertFatalAdapter`, health timeout) still routes through `EventManager.FatalAnnounce → fatalHandler` and reboots into Safe. |
 | Standby | submode | Condition evaluation each 1 Hz tick |
 
 **Events emitted:** mode and submode entry/exit events for every transition.

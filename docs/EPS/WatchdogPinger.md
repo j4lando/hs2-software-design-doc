@@ -8,7 +8,9 @@
 
 ## 2. Requirements
 
-TODO
+| ID | Requirement | Verification |
+|----|-------------|--------------|
+| HS2-WDP-001 | WatchdogPinger shall pulse the watchdog GPIO on each rate group tick. | Test |
 
 ---
 
