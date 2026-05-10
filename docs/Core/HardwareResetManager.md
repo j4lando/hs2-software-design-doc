@@ -31,6 +31,6 @@ Design deferred. Component is reserved for the Layer 5 / CdhCore integration wor
 
 ## 4. Notes
 
-- `HardwareResetManager` is intentionally excluded from all current subtopologies. Its EPS-specific use case (responding to repeated voltage warnings from `MpptIcManager`) is currently handled by `MpptIcManager` emitting N `WARNING_HI` events followed by a `FATAL`, which routes through the existing `EventManager.FatalAnnounce → fatalHandler` path.
-- The Layer 5 design (including `FaultManager` and `HardwareResetManager`) is a future work item. The scope includes general-purpose fault counting, configurable per-source thresholds, and targeted hardware reset capabilities.
+- `HardwareResetManager` is intentionally excluded from all current subtopologies.
+- The Layer 5 design (including `FaultManager` and `HardwareResetManager`) is a future work item. The scope includes general-purpose fault hanlding and targeted hardware reset capabilities.
 - Whether `resetOut[N]` GPIO ports are present depends on hardware team confirmation of which rails have software-controllable reset pins.
