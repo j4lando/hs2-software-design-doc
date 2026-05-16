@@ -52,15 +52,6 @@ If the incoming mode matches the current mode, the handler returns immediately (
 | `pingIn` | `pingOut` | In/Out | `Svc.Ping` | Health monitoring |
 | `logOut` | Output | `Fw.Log` | Event logging |
 | `tlmOut` | Output | `Fw.Tlm` | Telemetry (current mode, link state) |
-|`drvConnected`| Input | `Drv.ByteStreamReady`| Ready signal for S-Band Transceiver's UART connection |
-|`drvReceiveIn`| Input | `Drv.ByteStreamData`| Receives data from UART driver to S-Band Transceiver|
-|`drvReceiveReturnOut`| Output | `Fw.BufferSend`| Returns ownership of buffer arriving on `drvReceiveIn`|
-|`drvSendOut`| Output | `Drv.ByteStreamSend`| Sends data to S-Band transceiver|
-|`dataIn`| Input | `Svc.ComDataWithContext`| Data to be sent on wire (coming in to component) |
-|`dataOut`| Output | `Svc.ComDataWithContext` | Data received from the wire (going out of component)|
-|`comStatusOut`| Output | `Fw.SuccessCondition` | Status of last transmission (required for data flow)|
-|`dataReturnOut`| Output | `Svc.ComDataWithContext`| Port returning ownership of data that came in on dataIn|
-|`dataReturnIn` | Input | `Svc.ComDataWithContext` | Port receiving back ownership of buffer sent out on dataOut|
 ---
 
 ## 4. State Machine
